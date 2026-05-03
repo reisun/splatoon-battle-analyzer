@@ -1,7 +1,7 @@
 """CLI entry point for Splatoon Battle Analyzer.
 
 Provides command-line interface to extract frames from gameplay videos
-and optionally analyze them using Claude Vision API.
+or RTMP streams and optionally analyze them using Claude Vision API.
 """
 
 import argparse
@@ -9,8 +9,10 @@ import logging
 import sys
 from pathlib import Path
 
+import cv2
+
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
-from src.frame_extractor import extract_frames
+from src.frame_source import FileFrameSource, FrameSource, StreamFrameSource
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +25,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     Returns:
         Parsed arguments namespace.
+
+    Raises:
+        SystemExit: If argument validation fails.
     """
     parser = argparse.ArgumentParser(
         prog="splatoon-battle-analyzer",
         description="Analyze Splatoon gameplay videos using frame extraction and Claude Vision API.",
     )
-    parser.add_argument(
+
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--input",
-        required=True,
         help="Path to the input video file (mp4/mkv)",
     )
+    source_group.add_argument(
+        "--stream",
+        help="RTMP stream URL (e.g., rtmp://host.docker.internal:1935/live/stream)",
+    )
+
     parser.add_argument(
         "--interval",
         type=float,
@@ -55,6 +66,55 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable verbose logging",
     )
     return parser.parse_args(argv)
+
+
+def create_frame_source(args: argparse.Namespace) -> FrameSource:
+    """Create the appropriate FrameSource based on CLI arguments.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        A FrameSource instance (FileFrameSource or StreamFrameSource).
+    """
+    if args.stream:
+        return StreamFrameSource(
+            stream_url=args.stream,
+            interval_seconds=args.interval,
+        )
+    return FileFrameSource(
+        video_path=args.input,
+        interval_seconds=args.interval,
+    )
+
+
+def save_frames(
+    source: FrameSource,
+    output_dir: Path,
+) -> list[Path]:
+    """Extract and save frames from a FrameSource.
+
+    Args:
+        source: The frame source to extract from.
+        output_dir: Directory to save extracted frame images.
+
+    Returns:
+        List of paths to saved frame images.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+
+    for timestamp, frame in source.frames():
+        minutes = int(timestamp // 60)
+        seconds = int(timestamp % 60)
+        filename = f"frame_{minutes:02d}m{seconds:02d}s.jpg"
+        output_path = output_dir / filename
+
+        cv2.imwrite(str(output_path), frame)
+        saved_paths.append(output_path)
+        logger.info("Saved frame at %02d:%02d -> %s", minutes, seconds, filename)
+
+    return saved_paths
 
 
 def format_timeline(results: list[dict[str, str]]) -> str:
@@ -103,17 +163,14 @@ def run(argv: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
 
-    video_path = Path(args.input)
     output_dir = Path(args.output_dir)
+    source_label = args.stream if args.stream else args.input
 
-    # Step 1: Extract frames
-    logger.info("Extracting frames from: %s (interval: %.1fs)", video_path, args.interval)
+    # Step 1: Create frame source and extract frames
+    logger.info("Extracting frames from: %s (interval: %.1fs)", source_label, args.interval)
     try:
-        frame_paths = extract_frames(
-            video_path=video_path,
-            interval_seconds=args.interval,
-            output_dir=output_dir,
-        )
+        source = create_frame_source(args)
+        frame_paths = save_frames(source, output_dir)
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         logger.error("Frame extraction failed: %s", e)
         return 1

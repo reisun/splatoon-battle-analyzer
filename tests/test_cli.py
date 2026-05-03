@@ -11,8 +11,8 @@ from src.cli import format_timeline, parse_args, run
 class TestParseArgs:
     """Tests for argument parsing."""
 
-    def test_required_input(self) -> None:
-        """--input is required."""
+    def test_required_source(self) -> None:
+        """Either --input or --stream is required."""
         with pytest.raises(SystemExit):
             parse_args([])
 
@@ -20,6 +20,7 @@ class TestParseArgs:
         """Parse with only --input."""
         args = parse_args(["--input", "video.mp4"])
         assert args.input == "video.mp4"
+        assert args.stream is None
         assert args.interval == 10.0
         assert args.output_dir == "./output"
         assert args.frames_only is False
@@ -89,19 +90,23 @@ class TestFormatTimeline:
 class TestRun:
     """Tests for the main run function."""
 
-    @patch("src.cli.extract_frames")
-    def test_frames_only_mode(self, mock_extract: MagicMock, tmp_path: Path) -> None:
+    @patch("src.cli.save_frames")
+    @patch("src.cli.create_frame_source")
+    def test_frames_only_mode(
+        self,
+        mock_create_source: MagicMock,
+        mock_save_frames: MagicMock,
+        tmp_path: Path,
+    ) -> None:
         """Run in frames-only mode without API."""
         frame_paths = [tmp_path / "frame_00m00s.jpg", tmp_path / "frame_00m10s.jpg"]
-        mock_extract.return_value = frame_paths
-
-        video = tmp_path / "test.mp4"
-        video.touch()
+        mock_save_frames.return_value = frame_paths
+        mock_create_source.return_value = MagicMock()
 
         result = run(
             [
                 "--input",
-                str(video),
+                str(tmp_path / "test.mp4"),
                 "--interval",
                 "10",
                 "--output-dir",
@@ -111,36 +116,52 @@ class TestRun:
         )
 
         assert result == 0
-        mock_extract.assert_called_once()
+        mock_create_source.assert_called_once()
+        mock_save_frames.assert_called_once()
 
-    @patch("src.cli.extract_frames")
-    def test_extraction_failure(self, mock_extract: MagicMock, tmp_path: Path) -> None:
+    @patch("src.cli.save_frames")
+    @patch("src.cli.create_frame_source")
+    def test_extraction_failure(
+        self,
+        mock_create_source: MagicMock,
+        mock_save_frames: MagicMock,
+    ) -> None:
         """Return error code when extraction fails."""
-        mock_extract.side_effect = FileNotFoundError("Video not found")
+        mock_create_source.side_effect = FileNotFoundError("Video not found")
 
         result = run(["--input", "/no/video.mp4", "--frames-only"])
 
         assert result == 1
 
-    @patch("src.cli.extract_frames")
-    def test_no_frames_extracted(self, mock_extract: MagicMock, tmp_path: Path) -> None:
+    @patch("src.cli.save_frames")
+    @patch("src.cli.create_frame_source")
+    def test_no_frames_extracted(
+        self,
+        mock_create_source: MagicMock,
+        mock_save_frames: MagicMock,
+        tmp_path: Path,
+    ) -> None:
         """Return success when no frames are extracted."""
-        mock_extract.return_value = []
+        mock_save_frames.return_value = []
+        mock_create_source.return_value = MagicMock()
 
         result = run(["--input", str(tmp_path / "test.mp4"), "--frames-only"])
 
         assert result == 0
 
     @patch("src.cli.check_api_key_available")
-    @patch("src.cli.extract_frames")
+    @patch("src.cli.save_frames")
+    @patch("src.cli.create_frame_source")
     def test_missing_api_key_without_frames_only(
         self,
-        mock_extract: MagicMock,
+        mock_create_source: MagicMock,
+        mock_save_frames: MagicMock,
         mock_check_key: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Return error when API key is missing and not in frames-only mode."""
-        mock_extract.return_value = [tmp_path / "frame_00m00s.jpg"]
+        mock_save_frames.return_value = [tmp_path / "frame_00m00s.jpg"]
+        mock_create_source.return_value = MagicMock()
         mock_check_key.return_value = False
 
         result = run(["--input", str(tmp_path / "test.mp4")])
@@ -149,17 +170,20 @@ class TestRun:
 
     @patch("src.cli.BattleAnalyzer")
     @patch("src.cli.check_api_key_available")
-    @patch("src.cli.extract_frames")
+    @patch("src.cli.save_frames")
+    @patch("src.cli.create_frame_source")
     def test_full_pipeline(
         self,
-        mock_extract: MagicMock,
+        mock_create_source: MagicMock,
+        mock_save_frames: MagicMock,
         mock_check_key: MagicMock,
         mock_analyzer_cls: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Run the full pipeline with API analysis."""
         frame_paths = [tmp_path / "frame_00m00s.jpg"]
-        mock_extract.return_value = frame_paths
+        mock_save_frames.return_value = frame_paths
+        mock_create_source.return_value = MagicMock()
         mock_check_key.return_value = True
 
         mock_analyzer = MagicMock()
