@@ -26,16 +26,18 @@ class TestParseArgs:
 
     def test_all_arguments(self) -> None:
         """Parse all arguments."""
-        args = parse_args([
-            "--input",
-            "game.mkv",
-            "--interval",
-            "5",
-            "--output-dir",
-            "/tmp/frames",
-            "--frames-only",
-            "--verbose",
-        ])
+        args = parse_args(
+            [
+                "--input",
+                "game.mkv",
+                "--interval",
+                "5",
+                "--output-dir",
+                "/tmp/frames",
+                "--frames-only",
+                "--verbose",
+            ]
+        )
         assert args.input == "game.mkv"
         assert args.interval == 5.0
         assert args.output_dir == "/tmp/frames"
@@ -96,15 +98,17 @@ class TestRun:
         video = tmp_path / "test.mp4"
         video.touch()
 
-        result = run([
-            "--input",
-            str(video),
-            "--interval",
-            "10",
-            "--output-dir",
-            str(tmp_path),
-            "--frames-only",
-        ])
+        result = run(
+            [
+                "--input",
+                str(video),
+                "--interval",
+                "10",
+                "--output-dir",
+                str(tmp_path),
+                "--frames-only",
+            ]
+        )
 
         assert result == 0
         mock_extract.assert_called_once()

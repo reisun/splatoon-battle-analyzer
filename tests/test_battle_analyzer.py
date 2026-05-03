@@ -1,6 +1,5 @@
 """Tests for the battle analysis module."""
 
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -132,8 +131,9 @@ class TestBattleAnalyzer:
         analyzer = BattleAnalyzer(api_key="test-key")
         assert analyzer._client is None
 
-        with patch("src.battle_analyzer.anthropic") as mock_anthropic:
-            mock_anthropic.Anthropic.return_value = MagicMock()
+        mock_anthropic = MagicMock()
+        mock_anthropic.Anthropic.return_value = MagicMock()
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
             client = analyzer.client
             assert client is not None
             mock_anthropic.Anthropic.assert_called_once_with(api_key="test-key")
