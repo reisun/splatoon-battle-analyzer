@@ -137,6 +137,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=5,
         help="Intensity threshold for highlight candidates (default: 5)",
     )
+    parser.add_argument(
+        "--max-highlights",
+        type=int,
+        default=3,
+        help="Maximum number of highlight regions to analyze in Stage 2 (default: 3)",
+    )
     return parser.parse_args(argv)
 
 
@@ -359,6 +365,7 @@ def _run_highlight_mode(args: argparse.Namespace) -> int:
         stage1_interval=args.stage1_interval,
         stage2_interval=args.stage2_interval,
         threshold=args.threshold,
+        max_highlights=args.max_highlights,
     )
 
     video_path = Path(args.input)

@@ -12,10 +12,32 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import cv2
 import numpy as np
 import requests
 
 logger = logging.getLogger(__name__)
+
+MAX_IMAGE_WIDTH = 960
+MAX_IMAGE_HEIGHT = 540
+
+
+def _resize_if_needed(frame: np.ndarray) -> np.ndarray:
+    """Resize frame to half-HD (960x540) if larger."""
+    h, w = frame.shape[:2]
+    if w <= MAX_IMAGE_WIDTH and h <= MAX_IMAGE_HEIGHT:
+        return frame
+    scale = min(MAX_IMAGE_WIDTH / w, MAX_IMAGE_HEIGHT / h)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+def _encode_frame(frame: np.ndarray) -> str:
+    """Resize and encode a frame to base64 JPEG."""
+    resized = _resize_if_needed(frame)
+    _, buffer = cv2.imencode(".jpg", resized)
+    return base64.standard_b64encode(buffer.tobytes()).decode("utf-8")
 
 ANALYSIS_PROMPT = """あなたはスプラトゥーンのゲーム画面を分析するアシスタントです。
 以下のスクリーンショットから戦況を読み取り、JSON形式で回答してください。
@@ -137,7 +159,8 @@ class BattleAnalyzer:
         if not image_path.exists():
             raise FileNotFoundError(f"Image file not found: {image_path}")
 
-        image_data = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
+        frame = cv2.imread(str(image_path))
+        image_data = _encode_frame(frame)
 
         logger.info("Analyzing frame: %s", image_path.name)
 
@@ -155,10 +178,7 @@ class BattleAnalyzer:
         Returns:
             Parsed analysis dict or raw string if parsing fails.
         """
-        import cv2
-
-        _, buffer = cv2.imencode(".jpg", frame)
-        image_data = base64.standard_b64encode(buffer.tobytes()).decode("utf-8")
+        image_data = _encode_frame(frame)
 
         logger.info("Analyzing frame at %s (from memory)", timestamp)
 
@@ -179,10 +199,7 @@ class BattleAnalyzer:
         Returns:
             Parsed analysis dict or raw string if parsing fails.
         """
-        import cv2
-
-        _, buffer = cv2.imencode(".jpg", frame)
-        image_data = base64.standard_b64encode(buffer.tobytes()).decode("utf-8")
+        image_data = _encode_frame(frame)
 
         logger.info("Analyzing frame at %s with custom prompt", timestamp)
 

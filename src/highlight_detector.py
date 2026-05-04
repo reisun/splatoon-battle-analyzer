@@ -27,11 +27,13 @@ class HighlightDetector:
         stage1_interval: float = 30,
         stage2_interval: float = 5,
         threshold: int = 5,
+        max_highlights: int = 3,
     ) -> None:
         self.analyzer = analyzer
         self.stage1_interval = stage1_interval
         self.stage2_interval = stage2_interval
         self.threshold = threshold
+        self.max_highlights = max_highlights
         self.stage1_summary: dict = {}
 
     def detect(
@@ -52,9 +54,9 @@ class HighlightDetector:
         )
 
         stage1_start = start_seconds or 0.0
-        stage1_results = []
+        stage1_results: list[tuple[float, dict | str]] = []
         battle_count = 0
-        candidate_timestamps: list[float] = []
+        candidates: list[tuple[float, int]] = []
 
         for i, frame in enumerate(stage1_frames):
             timestamp_sec = stage1_start + i * self.stage1_interval
@@ -74,7 +76,12 @@ class HighlightDetector:
                 if scene == "battle":
                     battle_count += 1
                     if intensity >= self.threshold:
-                        candidate_timestamps.append(timestamp_sec)
+                        candidates.append((timestamp_sec, intensity))
+
+        # Select top N by intensity
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        top_candidates = candidates[: self.max_highlights]
+        candidate_timestamps = [ts for ts, _ in top_candidates]
 
         self.stage1_summary = {
             "total_frames": len(stage1_frames),
@@ -109,8 +116,9 @@ class HighlightDetector:
                     result = {"intensity": 0, "description": "analysis failed"}
                 stage2_results.append((timestamp_sec, result))
 
-        # Merge into segments
-        return self._merge_segments(stage2_results)
+        # Merge into segments and filter by threshold
+        segments = self._merge_segments(stage2_results)
+        return [s for s in segments if s.peak_intensity >= self.threshold]
 
     def _build_regions(
         self,

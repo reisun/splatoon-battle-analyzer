@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import cv2
+import numpy as np
 import pytest
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available, parse_llm_response
@@ -99,7 +101,9 @@ class TestBattleAnalyzer:
     def test_analyze_frame_success(self, mock_post: MagicMock, tmp_path: Path) -> None:
         """Successfully analyze a frame image."""
         image_file = tmp_path / "frame_00m10s.jpg"
-        image_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-data")
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        _, buf = cv2.imencode(".jpg", img)
+        image_file.write_bytes(buf.tobytes())
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -128,7 +132,9 @@ class TestBattleAnalyzer:
     ) -> None:
         """Return raw string when LLM response is not valid JSON."""
         image_file = tmp_path / "frame_00m10s.jpg"
-        image_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-data")
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        _, buf = cv2.imencode(".jpg", img)
+        image_file.write_bytes(buf.tobytes())
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -146,8 +152,6 @@ class TestBattleAnalyzer:
     @patch("src.battle_analyzer.requests.post")
     def test_analyze_frame_from_memory(self, mock_post: MagicMock) -> None:
         """Analyze a frame from memory (numpy array)."""
-        import numpy as np
-
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
 
         mock_response = MagicMock()
@@ -170,7 +174,9 @@ class TestBattleAnalyzer:
         paths = []
         for name in ["frame_00m00s.jpg", "frame_00m10s.jpg", "frame_00m20s.jpg"]:
             p = tmp_path / name
-            p.write_bytes(b"\xff\xd8\xff\xe0fake")
+            img = np.zeros((100, 100, 3), dtype=np.uint8)
+            _, buf = cv2.imencode(".jpg", img)
+            p.write_bytes(buf.tobytes())
             paths.append(p)
 
         mock_response = MagicMock()
@@ -192,11 +198,14 @@ class TestBattleAnalyzer:
     @patch("src.battle_analyzer.requests.post")
     def test_analyze_frames_handles_error(self, mock_post: MagicMock, tmp_path: Path) -> None:
         """Handle analysis errors gracefully for individual frames."""
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        _, buf = cv2.imencode(".jpg", img)
+
         good_frame = tmp_path / "frame_00m00s.jpg"
-        good_frame.write_bytes(b"\xff\xd8\xff\xe0fake")
+        good_frame.write_bytes(buf.tobytes())
 
         bad_frame = tmp_path / "frame_00m10s.jpg"
-        bad_frame.write_bytes(b"\xff\xd8\xff\xe0fake")
+        bad_frame.write_bytes(buf.tobytes())
 
         good_response = MagicMock()
         good_response.status_code = 200
@@ -221,7 +230,9 @@ class TestBattleAnalyzer:
         paths = []
         for name in ["frame_00m00s.jpg", "frame_00m10s.jpg", "frame_00m20s.jpg"]:
             p = tmp_path / name
-            p.write_bytes(b"\xff\xd8\xff\xe0fake")
+            img = np.zeros((100, 100, 3), dtype=np.uint8)
+            _, buf = cv2.imencode(".jpg", img)
+            p.write_bytes(buf.tobytes())
             paths.append(p)
 
         call_count = [0]
