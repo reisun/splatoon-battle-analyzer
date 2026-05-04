@@ -1,6 +1,6 @@
-"""Battle analysis module using Claude Vision API.
+"""Battle analysis module using Ollama Vision API (llava-llama3).
 
-Sends frame images to Claude Vision API and extracts battle status information.
+Sends frame images to Ollama REST API and extracts battle status information.
 Supports concurrent API calls for improved throughput.
 """
 
@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -29,40 +30,57 @@ Extract the following battle information visible on screen:
 Respond in a structured format. If any element is not visible or unclear, note it as "Not visible".
 Keep the response concise - one line per category."""
 
+DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
+OLLAMA_MODEL = "llava-llama3"
+
 
 class BattleAnalyzer:
-    """Analyzes Splatoon battle frames using Claude Vision API."""
+    """Analyzes Splatoon battle frames using Ollama Vision API."""
 
-    def __init__(self, api_key: str | None = None, concurrency: int = 4) -> None:
-        """Initialize the analyzer with an Anthropic API key.
+    def __init__(self, base_url: str | None = None, concurrency: int = 4) -> None:
+        """Initialize the analyzer with Ollama endpoint.
 
         Args:
-            api_key: Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
+            base_url: Ollama API base URL. Falls back to OLLAMA_BASE_URL env var.
             concurrency: Maximum number of concurrent API calls.
-
-        Raises:
-            ValueError: If no API key is available.
         """
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "ANTHROPIC_API_KEY is required. "
-                "Set it via environment variable or pass it directly."
-            )
-        self._client: object | None = None
+        self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL)
         self.concurrency = concurrency
 
-    @property
-    def client(self) -> object:
-        """Lazy-initialize the Anthropic client."""
-        if self._client is None:
-            import anthropic
+    def _call_ollama(self, prompt: str, image_base64: str) -> str:
+        """Call Ollama /api/chat with an image.
 
-            self._client = anthropic.Anthropic(api_key=self.api_key)
-        return self._client
+        Args:
+            prompt: Text prompt to send.
+            image_base64: Base64-encoded image data.
+
+        Returns:
+            Response text from the model.
+
+        Raises:
+            requests.HTTPError: If the API returns a non-2xx status.
+        """
+        url = f"{self.base_url}/api/chat"
+        payload = {
+            "model": OLLAMA_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [image_base64],
+                }
+            ],
+            "stream": False,
+        }
+
+        response = requests.post(url, json=payload, timeout=120)
+        response.raise_for_status()
+
+        data = response.json()
+        return data["message"]["content"]
 
     def analyze_frame(self, image_path: str | Path) -> str:
-        """Analyze a single frame image using Claude Vision API.
+        """Analyze a single frame image using Ollama Vision API.
 
         Args:
             image_path: Path to the frame image file.
@@ -79,48 +97,14 @@ class BattleAnalyzer:
 
         image_data = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
 
-        suffix = image_path.suffix.lower()
-        media_type_map = {
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".png": "image/png",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-        }
-        media_type = media_type_map.get(suffix, "image/jpeg")
-
         logger.info("Analyzing frame: %s", image_path.name)
 
-        response = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": image_data,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": ANALYSIS_PROMPT,
-                        },
-                    ],
-                }
-            ],
-        )
-
-        result = response.content[0].text
+        result = self._call_ollama(ANALYSIS_PROMPT, image_data)
         logger.info("Analysis complete for: %s", image_path.name)
         return result
 
     def analyze_frame_from_memory(self, frame: np.ndarray, timestamp: str) -> str:
-        """Analyze a frame held in memory (numpy array) using Claude Vision API.
+        """Analyze a frame held in memory (numpy array) using Ollama Vision API.
 
         Args:
             frame: Frame image as a numpy array (BGR format from OpenCV).
@@ -136,31 +120,7 @@ class BattleAnalyzer:
 
         logger.info("Analyzing frame at %s (from memory)", timestamp)
 
-        response = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": image_data,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": ANALYSIS_PROMPT,
-                        },
-                    ],
-                }
-            ],
-        )
-
-        result = response.content[0].text
+        result = self._call_ollama(ANALYSIS_PROMPT, image_data)
         logger.info("Analysis complete for frame at %s", timestamp)
         return result
 
@@ -200,9 +160,14 @@ class BattleAnalyzer:
 
 
 def check_api_key_available() -> bool:
-    """Check if ANTHROPIC_API_KEY is set in environment.
+    """Check if Ollama is reachable by calling /api/tags.
 
     Returns:
-        True if the key is available, False otherwise.
+        True if Ollama responds successfully, False otherwise.
     """
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    base_url = os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL)
+    try:
+        response = requests.get(f"{base_url}/api/tags", timeout=5)
+        return response.status_code == 200
+    except (requests.ConnectionError, requests.Timeout):
+        return False

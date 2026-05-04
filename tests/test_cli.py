@@ -160,13 +160,13 @@ class TestRun:
 
     @patch("src.cli.check_api_key_available")
     @patch("src.cli.extract_frames")
-    def test_missing_api_key_without_frames_only(
+    def test_ollama_not_reachable_without_frames_only(
         self,
         mock_extract: MagicMock,
         mock_check_key: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Return error when API key is missing and not in frames-only mode."""
+        """Return error when Ollama is not reachable and not in frames-only mode."""
         mock_extract.return_value = [tmp_path / "frame_00m00s.jpg"]
         mock_check_key.return_value = False
 

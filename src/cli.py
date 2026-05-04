@@ -1,7 +1,7 @@
 """CLI entry point for Splatoon Battle Analyzer.
 
 Provides command-line interface to extract frames from gameplay videos
-and optionally analyze them using Claude Vision API.
+and optionally analyze them using Ollama Vision API (llava-llama3).
 """
 
 import argparse
@@ -26,7 +26,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         prog="splatoon-battle-analyzer",
-        description="Analyze Splatoon gameplay videos using frame extraction and Claude Vision API.",
+        description="Analyze Splatoon gameplay videos using frame extraction and Ollama Vision API.",
     )
     parser.add_argument(
         "--input",
@@ -172,11 +172,11 @@ def run(argv: list[str] | None = None) -> int:
 
     if not check_api_key_available():
         logger.warning(
-            "ANTHROPIC_API_KEY is not set. Use --frames-only or set the API key in .env"
+            "Ollama is not reachable. Use --frames-only or check OLLAMA_BASE_URL in .env"
         )
         if not args.no_save:
             print(f"\nExtracted {len(frame_paths)} frames to {output_dir}")
-        print("Set ANTHROPIC_API_KEY to enable battle analysis.")
+        print("Ensure Ollama is running and OLLAMA_BASE_URL is correctly configured.")
         return 1
 
     # Step 3: Analyze and output timeline
