@@ -25,7 +25,11 @@ COPY . .
 RUN pip install --no-cache-dir -e ".[dev]"
 
 # Run as non-root user (required for claude --dangerously-skip-permissions)
-RUN useradd -m appuser
+RUN useradd -m appuser && \
+    mkdir -p /app/.ruff_cache /app/.pytest_cache && \
+    chown -R appuser:appuser /app/.ruff_cache /app/.pytest_cache
 USER appuser
 
-CMD ["python", "-m", "src.cli", "--help"]
+EXPOSE 8000
+
+CMD ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]

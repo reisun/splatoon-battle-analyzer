@@ -1,6 +1,8 @@
 services:
   app:
     build: .
+    ports:
+      - "8020:8000"
     volumes:
       - .:/app
       - ~/.claude.json:/home/appuser/.claude.json:ro
@@ -8,6 +10,7 @@ services:
     env_file:
       - .env
     working_dir: /app
+    restart: unless-stopped
     networks:
       - llm-network
 
