@@ -28,6 +28,16 @@ class TestBattleAnalyzer:
         with pytest.raises(ValueError, match="ANTHROPIC_API_KEY is required"):
             BattleAnalyzer()
 
+    def test_init_concurrency_default(self) -> None:
+        """Default concurrency is 4."""
+        analyzer = BattleAnalyzer(api_key="test-key")
+        assert analyzer.concurrency == 4
+
+    def test_init_concurrency_custom(self) -> None:
+        """Custom concurrency value."""
+        analyzer = BattleAnalyzer(api_key="test-key", concurrency=8)
+        assert analyzer.concurrency == 8
+
     def test_analyze_frame_file_not_found(self) -> None:
         """Raise FileNotFoundError when image does not exist."""
         analyzer = BattleAnalyzer(api_key="test-key")
@@ -117,7 +127,7 @@ class TestBattleAnalyzer:
             Exception("API error"),
         ]
 
-        analyzer = BattleAnalyzer(api_key="test-key")
+        analyzer = BattleAnalyzer(api_key="test-key", concurrency=1)
         analyzer._client = mock_client
 
         results = analyzer.analyze_frames([good_frame, bad_frame])
@@ -125,6 +135,36 @@ class TestBattleAnalyzer:
         assert len(results) == 2
         assert results[0]["analysis"] == "OK"
         assert "[Error]" in results[1]["analysis"]
+
+    def test_analyze_frames_preserves_order(self, tmp_path: Path) -> None:
+        """Results are returned in the same order as input paths."""
+        paths = []
+        for name in ["frame_00m00s.jpg", "frame_00m10s.jpg", "frame_00m20s.jpg"]:
+            p = tmp_path / name
+            p.write_bytes(b"\xff\xd8\xff\xe0fake")
+            paths.append(p)
+
+        call_count = [0]
+
+        def mock_create(**kwargs):
+            call_count[0] += 1
+            response = MagicMock()
+            response.content = [MagicMock(text=f"Result {call_count[0]}")]
+            return response
+
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = mock_create
+
+        analyzer = BattleAnalyzer(api_key="test-key", concurrency=1)
+        analyzer._client = mock_client
+
+        results = analyzer.analyze_frames(paths)
+
+        # With concurrency=1, order should be deterministic
+        assert len(results) == 3
+        assert results[0]["timestamp"] == "00m00s"
+        assert results[1]["timestamp"] == "00m10s"
+        assert results[2]["timestamp"] == "00m20s"
 
     def test_lazy_client_initialization(self) -> None:
         """Client is lazily initialized on first access."""

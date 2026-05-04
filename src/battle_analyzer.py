@@ -1,12 +1,16 @@
 """Battle analysis module using Claude Vision API.
 
 Sends frame images to Claude Vision API and extracts battle status information.
+Supports concurrent API calls for improved throughput.
 """
 
 import base64
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +33,12 @@ Keep the response concise - one line per category."""
 class BattleAnalyzer:
     """Analyzes Splatoon battle frames using Claude Vision API."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, concurrency: int = 4) -> None:
         """Initialize the analyzer with an Anthropic API key.
 
         Args:
             api_key: Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
+            concurrency: Maximum number of concurrent API calls.
 
         Raises:
             ValueError: If no API key is available.
@@ -45,6 +50,7 @@ class BattleAnalyzer:
                 "Set it via environment variable or pass it directly."
             )
         self._client: object | None = None
+        self.concurrency = concurrency
 
     @property
     def client(self) -> object:
@@ -113,30 +119,82 @@ class BattleAnalyzer:
         logger.info("Analysis complete for: %s", image_path.name)
         return result
 
+    def analyze_frame_from_memory(self, frame: np.ndarray, timestamp: str) -> str:
+        """Analyze a frame held in memory (numpy array) using Claude Vision API.
+
+        Args:
+            frame: Frame image as a numpy array (BGR format from OpenCV).
+            timestamp: Timestamp label for logging.
+
+        Returns:
+            Analysis text describing the battle status.
+        """
+        import cv2
+
+        _, buffer = cv2.imencode(".jpg", frame)
+        image_data = base64.standard_b64encode(buffer.tobytes()).decode("utf-8")
+
+        logger.info("Analyzing frame at %s (from memory)", timestamp)
+
+        response = self.client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_data,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": ANALYSIS_PROMPT,
+                        },
+                    ],
+                }
+            ],
+        )
+
+        result = response.content[0].text
+        logger.info("Analysis complete for frame at %s", timestamp)
+        return result
+
     def analyze_frames(self, image_paths: list[Path]) -> list[dict[str, str]]:
-        """Analyze multiple frame images sequentially.
+        """Analyze multiple frame images concurrently.
 
         Args:
             image_paths: List of paths to frame images.
 
         Returns:
             List of dicts with 'timestamp' (from filename) and 'analysis' keys.
+            Results are returned in the same order as input paths.
         """
-        results: list[dict[str, str]] = []
+        results: list[dict[str, str]] = [{}] * len(image_paths)
 
-        for path in image_paths:
+        def _analyze_one(index: int, path: Path) -> tuple[int, dict[str, str]]:
             timestamp = path.stem.replace("frame_", "")
             try:
                 analysis = self.analyze_frame(path)
-                results.append({"timestamp": timestamp, "analysis": analysis})
+                return index, {"timestamp": timestamp, "analysis": analysis}
             except Exception:
                 logger.exception("Failed to analyze %s", path.name)
-                results.append(
-                    {
-                        "timestamp": timestamp,
-                        "analysis": f"[Error] Failed to analyze {path.name}",
-                    }
-                )
+                return index, {
+                    "timestamp": timestamp,
+                    "analysis": f"[Error] Failed to analyze {path.name}",
+                }
+
+        with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
+            futures = [
+                executor.submit(_analyze_one, i, path) for i, path in enumerate(image_paths)
+            ]
+            for future in as_completed(futures):
+                idx, result = future.result()
+                results[idx] = result
 
         return results
 

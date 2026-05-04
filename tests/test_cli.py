@@ -23,6 +23,11 @@ class TestParseArgs:
         assert args.interval == 10.0
         assert args.output_dir == "./output"
         assert args.frames_only is False
+        assert args.max_frames is None
+        assert args.start is None
+        assert args.end is None
+        assert args.no_save is False
+        assert args.concurrency == 4
 
     def test_all_arguments(self) -> None:
         """Parse all arguments."""
@@ -36,6 +41,14 @@ class TestParseArgs:
                 "/tmp/frames",
                 "--frames-only",
                 "--verbose",
+                "--max-frames",
+                "20",
+                "--start",
+                "30",
+                "--end",
+                "120",
+                "--concurrency",
+                "8",
             ]
         )
         assert args.input == "game.mkv"
@@ -43,6 +56,10 @@ class TestParseArgs:
         assert args.output_dir == "/tmp/frames"
         assert args.frames_only is True
         assert args.verbose is True
+        assert args.max_frames == 20
+        assert args.start == 30.0
+        assert args.end == 120.0
+        assert args.concurrency == 8
 
     def test_default_interval(self) -> None:
         """Default interval is 10 seconds."""
@@ -53,6 +70,16 @@ class TestParseArgs:
         """Default output directory is ./output."""
         args = parse_args(["--input", "v.mp4"])
         assert args.output_dir == "./output"
+
+    def test_no_save_option(self) -> None:
+        """Parse --no-save option."""
+        args = parse_args(["--input", "v.mp4", "--no-save"])
+        assert args.no_save is True
+
+    def test_max_frames_option(self) -> None:
+        """Parse --max-frames option."""
+        args = parse_args(["--input", "v.mp4", "--max-frames", "50"])
+        assert args.max_frames == 50
 
 
 class TestFormatTimeline:
@@ -172,3 +199,69 @@ class TestRun:
 
         assert result == 0
         mock_analyzer.analyze_frames.assert_called_once_with(frame_paths)
+
+    def test_no_save_with_frames_only_returns_error(self) -> None:
+        """Return error when --no-save is used with --frames-only."""
+        result = run(["--input", "video.mp4", "--no-save", "--frames-only"])
+        assert result == 1
+
+    @patch("src.cli.extract_frames")
+    def test_max_frames_passed_to_extractor(self, mock_extract: MagicMock, tmp_path: Path) -> None:
+        """Pass max_frames to extract_frames."""
+        mock_extract.return_value = []
+
+        run(
+            [
+                "--input",
+                str(tmp_path / "test.mp4"),
+                "--frames-only",
+                "--max-frames",
+                "5",
+            ]
+        )
+
+        call_kwargs = mock_extract.call_args[1]
+        assert call_kwargs["max_frames"] == 5
+
+    @patch("src.cli.extract_frames")
+    def test_start_end_passed_to_extractor(self, mock_extract: MagicMock, tmp_path: Path) -> None:
+        """Pass start and end seconds to extract_frames."""
+        mock_extract.return_value = []
+
+        run(
+            [
+                "--input",
+                str(tmp_path / "test.mp4"),
+                "--frames-only",
+                "--start",
+                "30",
+                "--end",
+                "90",
+            ]
+        )
+
+        call_kwargs = mock_extract.call_args[1]
+        assert call_kwargs["start_seconds"] == 30.0
+        assert call_kwargs["end_seconds"] == 90.0
+
+    @patch("src.cli.BattleAnalyzer")
+    @patch("src.cli.check_api_key_available")
+    @patch("src.cli.extract_frames")
+    def test_concurrency_passed_to_analyzer(
+        self,
+        mock_extract: MagicMock,
+        mock_check_key: MagicMock,
+        mock_analyzer_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Pass concurrency to BattleAnalyzer."""
+        mock_extract.return_value = [tmp_path / "frame_00m00s.jpg"]
+        mock_check_key.return_value = True
+
+        mock_analyzer = MagicMock()
+        mock_analyzer.analyze_frames.return_value = [{"timestamp": "00m00s", "analysis": "test"}]
+        mock_analyzer_cls.return_value = mock_analyzer
+
+        run(["--input", str(tmp_path / "test.mp4"), "--concurrency", "8"])
+
+        mock_analyzer_cls.assert_called_once_with(concurrency=8)
