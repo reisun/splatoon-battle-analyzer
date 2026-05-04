@@ -29,9 +29,9 @@ class TestBattleAnalyzer:
         assert analyzer.base_url == "http://localhost:11434"
 
     def test_init_concurrency_default(self) -> None:
-        """Default concurrency is 4."""
+        """Default concurrency is 1."""
         analyzer = BattleAnalyzer()
-        assert analyzer.concurrency == 4
+        assert analyzer.concurrency == 1
 
     def test_init_concurrency_custom(self) -> None:
         """Custom concurrency value."""

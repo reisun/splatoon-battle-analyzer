@@ -37,7 +37,7 @@ OLLAMA_MODEL = "llava-llama3"
 class BattleAnalyzer:
     """Analyzes Splatoon battle frames using Ollama Vision API."""
 
-    def __init__(self, base_url: str | None = None, concurrency: int = 4) -> None:
+    def __init__(self, base_url: str | None = None, concurrency: int = 1) -> None:
         """Initialize the analyzer with Ollama endpoint.
 
         Args:
@@ -73,7 +73,7 @@ class BattleAnalyzer:
             "stream": False,
         }
 
-        response = requests.post(url, json=payload, timeout=120)
+        response = requests.post(url, json=payload, timeout=300)
         response.raise_for_status()
 
         data = response.json()
