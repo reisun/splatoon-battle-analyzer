@@ -5,10 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "splatoon-battle-analyzer"
 version = "0.1.0"
-description = "Analyze Splatoon gameplay videos using frame extraction and Ollama Vision API"
+description = "Highlight detection API for Splatoon gameplay videos using Claude Vision"
 requires-python = ">=3.12"
 dependencies = [
     "opencv-python-headless>=4.9.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +18,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-ruff>=0.4.0",
     "ruff>=0.8.0",
+    "httpx>=0.27.0",
 ]
 
 [tool.pytest.ini_options]
@@ -25,6 +28,7 @@ addopts = "--ruff --ruff-format"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+cache-dir = "/tmp/.ruff_cache"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
