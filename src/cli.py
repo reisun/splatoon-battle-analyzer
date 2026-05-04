@@ -5,12 +5,14 @@ and optionally analyze them using Ollama Vision API (llava-llama3).
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.frame_extractor import extract_frames
+from src.highlight_detector import HighlightDetector
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +85,62 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=4,
         help="Number of concurrent API calls (default: 4)",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Ollama model name (default: env OLLAMA_MODEL or llava-llama3)",
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
+    parser.add_argument(
+        "--output-file",
+        type=str,
+        default=None,
+        help="Write output to file instead of stdout",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["timeline", "highlight"],
+        default="timeline",
+        help="Analysis mode (default: timeline)",
+    )
+    parser.add_argument(
+        "--stage1-interval",
+        type=float,
+        default=30.0,
+        help="Stage 1 frame interval in seconds for highlight mode (default: 30)",
+    )
+    parser.add_argument(
+        "--stage2-interval",
+        type=float,
+        default=5.0,
+        help="Stage 2 frame interval in seconds for highlight mode (default: 5)",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=int,
+        default=5,
+        help="Intensity threshold for highlight candidates (default: 5)",
+    )
     return parser.parse_args(argv)
 
 
-def format_timeline(results: list[dict[str, str]]) -> str:
+def _timestamp_to_seconds(timestamp: str) -> int:
+    """Convert timestamp like '02m30s' to seconds."""
+    import re
+
+    match = re.match(r"(\d+)m(\d+)s", timestamp)
+    if match:
+        return int(match.group(1)) * 60 + int(match.group(2))
+    return 0
+
+
+def format_timeline(results: list[dict]) -> str:
     """Format analysis results as a timeline string.
 
     Args:
@@ -104,7 +158,11 @@ def format_timeline(results: list[dict[str, str]]) -> str:
         lines.append("")
         lines.append(f"[{entry['timestamp']}]")
         lines.append("-" * 40)
-        lines.append(entry["analysis"])
+        analysis = entry["analysis"]
+        if isinstance(analysis, dict):
+            lines.append(json.dumps(analysis, ensure_ascii=False, indent=2))
+        else:
+            lines.append(str(analysis))
 
     lines.append("")
     lines.append("=" * 60)
@@ -112,6 +170,38 @@ def format_timeline(results: list[dict[str, str]]) -> str:
     lines.append("=" * 60)
 
     return "\n".join(lines)
+
+
+def format_json_output(results: list[dict], args: argparse.Namespace, model: str) -> str:
+    """Format analysis results as JSON.
+
+    Args:
+        results: List of dicts with 'timestamp' and 'analysis' keys.
+        args: Parsed CLI arguments.
+        model: Model name used for analysis.
+
+    Returns:
+        JSON string.
+    """
+    timeline = []
+    for entry in results:
+        timeline.append(
+            {
+                "timestamp": entry["timestamp"],
+                "seconds": _timestamp_to_seconds(entry["timestamp"]),
+                "analysis": entry["analysis"],
+            }
+        )
+
+    output = {
+        "video": Path(args.input).name,
+        "model": model,
+        "interval_seconds": args.interval,
+        "frames_analyzed": len(results),
+        "timeline": timeline,
+    }
+
+    return json.dumps(output, ensure_ascii=False, indent=2)
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -139,6 +229,10 @@ def run(argv: list[str] | None = None) -> int:
     if args.no_save and args.frames_only:
         logger.error("--no-save cannot be used with --frames-only")
         return 1
+
+    # Highlight mode: use 2-stage pipeline
+    if args.mode == "highlight":
+        return _run_highlight_mode(args)
 
     # Step 1: Extract frames
     logger.info("Extracting frames from: %s (interval: %.1fs)", video_path, args.interval)
@@ -181,9 +275,8 @@ def run(argv: list[str] | None = None) -> int:
 
     # Step 3: Analyze and output timeline
     try:
-        analyzer = BattleAnalyzer(concurrency=args.concurrency)
+        analyzer = BattleAnalyzer(concurrency=args.concurrency, model=args.model)
         if args.no_save:
-            # Frames are numpy arrays in memory
             results = _analyze_memory_frames(analyzer, frame_paths, args)
         else:
             results = analyzer.analyze_frames(frame_paths)
@@ -191,17 +284,118 @@ def run(argv: list[str] | None = None) -> int:
         logger.exception("Analysis failed")
         return 1
 
-    timeline = format_timeline(results)
-    print(timeline)
+    # Step 4: Output results
+    if args.output_format == "json":
+        output_text = format_json_output(results, args, analyzer.model)
+    else:
+        output_text = format_timeline(results)
+
+    if args.output_file:
+        Path(args.output_file).write_text(output_text, encoding="utf-8")
+        logger.info("Output written to: %s", args.output_file)
+    else:
+        print(output_text)
 
     return 0
+
+
+def _run_highlight_mode(args: argparse.Namespace) -> int:
+    """Run the 2-stage highlight detection pipeline."""
+    if not check_api_key_available():
+        logger.error("Ollama is not reachable. Check OLLAMA_BASE_URL.")
+        return 1
+
+    analyzer = BattleAnalyzer(concurrency=args.concurrency, model=args.model)
+    detector = HighlightDetector(
+        analyzer=analyzer,
+        stage1_interval=args.stage1_interval,
+        stage2_interval=args.stage2_interval,
+        threshold=args.threshold,
+    )
+
+    video_path = Path(args.input)
+    try:
+        highlights = detector.detect(
+            video_path=video_path,
+            start_seconds=args.start,
+            end_seconds=args.end,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        logger.error("Highlight detection failed: %s", e)
+        return 1
+
+    if args.output_format == "json":
+        output_text = format_highlight_json(highlights, detector.stage1_summary, args, analyzer.model)
+    else:
+        output_text = format_highlight_text(highlights, detector.stage1_summary)
+
+    if args.output_file:
+        Path(args.output_file).write_text(output_text, encoding="utf-8")
+        logger.info("Output written to: %s", args.output_file)
+    else:
+        print(output_text)
+
+    return 0
+
+
+def format_highlight_json(
+    highlights: list,
+    stage1_summary: dict,
+    args: argparse.Namespace,
+    model: str,
+) -> str:
+    """Format highlight results as JSON."""
+    output = {
+        "video": Path(args.input).name,
+        "model": model,
+        "mode": "highlight",
+        "highlights": [
+            {
+                "start_seconds": h.start_seconds,
+                "end_seconds": h.end_seconds,
+                "peak_intensity": h.peak_intensity,
+                "description": h.description,
+            }
+            for h in highlights
+        ],
+        "stage1_summary": stage1_summary,
+    }
+    return json.dumps(output, ensure_ascii=False, indent=2)
+
+
+def format_highlight_text(highlights: list, stage1_summary: dict) -> str:
+    """Format highlight results as plain text."""
+    lines = []
+    lines.append("=" * 60)
+    lines.append("SPLATOON HIGHLIGHT DETECTION")
+    lines.append("=" * 60)
+    lines.append("")
+    lines.append(
+        f"Stage 1: {stage1_summary.get('total_frames', 0)} frames scanned, "
+        f"{stage1_summary.get('battle_frames', 0)} battle, "
+        f"{stage1_summary.get('candidate_frames', 0)} candidates"
+    )
+    lines.append("")
+
+    if not highlights:
+        lines.append("No highlights detected.")
+    else:
+        for i, h in enumerate(highlights, 1):
+            lines.append(f"Highlight #{i}:")
+            lines.append(f"  Time: {h.start_seconds:.0f}s - {h.end_seconds:.0f}s")
+            lines.append(f"  Peak intensity: {h.peak_intensity}")
+            lines.append(f"  Description: {h.description}")
+            lines.append("")
+
+    lines.append("=" * 60)
+    return "\n".join(lines)
 
 
 def _analyze_memory_frames(
     analyzer: BattleAnalyzer,
     frames: list,
     args: argparse.Namespace,
-) -> list[dict[str, str]]:
+) -> list[dict]:
     """Analyze frames held in memory using concurrent API calls.
 
     Args:
@@ -214,13 +408,12 @@ def _analyze_memory_frames(
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    fps_estimate = 30.0  # Approximate; actual fps used during extraction
     interval = args.interval
     start = args.start or 0.0
 
-    results: list[dict[str, str]] = [{}] * len(frames)
+    results: list[dict] = [{}] * len(frames)
 
-    def _analyze_one(index: int, frame) -> tuple[int, dict[str, str]]:
+    def _analyze_one(index: int, frame) -> tuple[int, dict]:
         timestamp_sec = start + index * interval
         minutes = int(timestamp_sec // 60)
         seconds = int(timestamp_sec % 60)

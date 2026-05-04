@@ -5,7 +5,39 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.battle_analyzer import BattleAnalyzer, check_api_key_available
+from src.battle_analyzer import BattleAnalyzer, check_api_key_available, parse_llm_response
+
+
+class TestParseLlmResponse:
+    """Tests for parse_llm_response function."""
+
+    def test_valid_json(self) -> None:
+        """Parse valid JSON string."""
+        result = parse_llm_response('{"game_mode": "ナワバリバトル"}')
+        assert result == {"game_mode": "ナワバリバトル"}
+
+    def test_json_in_code_block(self) -> None:
+        """Parse JSON wrapped in ```json code block."""
+        text = '```json\n{"highlight_score": 7}\n```'
+        result = parse_llm_response(text)
+        assert result == {"highlight_score": 7}
+
+    def test_json_in_plain_code_block(self) -> None:
+        """Parse JSON wrapped in ``` code block without language tag."""
+        text = '```\n{"game_mode": "不明"}\n```'
+        result = parse_llm_response(text)
+        assert result == {"game_mode": "不明"}
+
+    def test_invalid_json_returns_raw(self) -> None:
+        """Return raw string when JSON parsing fails."""
+        text = "This is not JSON at all"
+        result = parse_llm_response(text)
+        assert result == text
+
+    def test_empty_string(self) -> None:
+        """Return empty string as-is."""
+        result = parse_llm_response("")
+        assert result == ""
 
 
 class TestBattleAnalyzer:
@@ -14,6 +46,7 @@ class TestBattleAnalyzer:
     def test_init_default_base_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Initialize with default Ollama base URL."""
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        monkeypatch.delenv("OLLAMA_MODEL", raising=False)
         analyzer = BattleAnalyzer()
         assert analyzer.base_url == "http://ollama:11434"
 
@@ -38,6 +71,24 @@ class TestBattleAnalyzer:
         analyzer = BattleAnalyzer(concurrency=8)
         assert analyzer.concurrency == 8
 
+    def test_init_model_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default model is llava-llama3."""
+        monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+        analyzer = BattleAnalyzer()
+        assert analyzer.model == "llava-llama3"
+
+    def test_init_model_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Model from environment variable."""
+        monkeypatch.setenv("OLLAMA_MODEL", "llava:13b")
+        analyzer = BattleAnalyzer()
+        assert analyzer.model == "llava:13b"
+
+    def test_init_model_explicit_overrides_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Explicit model parameter overrides environment variable."""
+        monkeypatch.setenv("OLLAMA_MODEL", "llava:13b")
+        analyzer = BattleAnalyzer(model="gemma3:12b")
+        assert analyzer.model == "gemma3:12b"
+
     def test_analyze_frame_file_not_found(self) -> None:
         """Raise FileNotFoundError when image does not exist."""
         analyzer = BattleAnalyzer()
@@ -53,15 +104,16 @@ class TestBattleAnalyzer:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "message": {"content": "Game Mode: Turf War\nScore: 45% vs 55%"}
+            "message": {"content": '{"game_mode": "ナワバリバトル", "highlight_score": 5}'}
         }
         mock_post.return_value = mock_response
 
         analyzer = BattleAnalyzer(base_url="http://localhost:11434")
         result = analyzer.analyze_frame(image_file)
 
-        assert "Turf War" in result
-        assert "Score" in result
+        assert isinstance(result, dict)
+        assert result["game_mode"] == "ナワバリバトル"
+        assert result["highlight_score"] == 5
         mock_post.assert_called_once()
 
         call_kwargs = mock_post.call_args
@@ -69,6 +121,27 @@ class TestBattleAnalyzer:
         assert payload["model"] == "llava-llama3"
         assert payload["stream"] is False
         assert len(payload["messages"][0]["images"]) == 1
+
+    @patch("src.battle_analyzer.requests.post")
+    def test_analyze_frame_returns_raw_on_parse_failure(
+        self, mock_post: MagicMock, tmp_path: Path
+    ) -> None:
+        """Return raw string when LLM response is not valid JSON."""
+        image_file = tmp_path / "frame_00m10s.jpg"
+        image_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-data")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "message": {"content": "I cannot analyze this image clearly."}
+        }
+        mock_post.return_value = mock_response
+
+        analyzer = BattleAnalyzer(base_url="http://localhost:11434")
+        result = analyzer.analyze_frame(image_file)
+
+        assert isinstance(result, str)
+        assert "cannot analyze" in result
 
     @patch("src.battle_analyzer.requests.post")
     def test_analyze_frame_from_memory(self, mock_post: MagicMock) -> None:
@@ -79,13 +152,16 @@ class TestBattleAnalyzer:
 
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"message": {"content": "Analysis from memory"}}
+        mock_response.json.return_value = {
+            "message": {"content": '{"game_mode": "不明", "highlight_score": 1}'}
+        }
         mock_post.return_value = mock_response
 
         analyzer = BattleAnalyzer(base_url="http://localhost:11434")
         result = analyzer.analyze_frame_from_memory(frame, "01m30s")
 
-        assert result == "Analysis from memory"
+        assert isinstance(result, dict)
+        assert result["game_mode"] == "不明"
         mock_post.assert_called_once()
 
     @patch("src.battle_analyzer.requests.post")
@@ -99,7 +175,9 @@ class TestBattleAnalyzer:
 
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"message": {"content": "Battle analysis"}}
+        mock_response.json.return_value = {
+            "message": {"content": '{"game_mode": "ナワバリバトル"}'}
+        }
         mock_post.return_value = mock_response
 
         analyzer = BattleAnalyzer(base_url="http://localhost:11434")
@@ -109,7 +187,7 @@ class TestBattleAnalyzer:
         assert results[0]["timestamp"] == "00m00s"
         assert results[1]["timestamp"] == "00m10s"
         assert results[2]["timestamp"] == "00m20s"
-        assert all(r["analysis"] == "Battle analysis" for r in results)
+        assert all(isinstance(r["analysis"], dict) for r in results)
 
     @patch("src.battle_analyzer.requests.post")
     def test_analyze_frames_handles_error(self, mock_post: MagicMock, tmp_path: Path) -> None:
@@ -122,7 +200,7 @@ class TestBattleAnalyzer:
 
         good_response = MagicMock()
         good_response.status_code = 200
-        good_response.json.return_value = {"message": {"content": "OK"}}
+        good_response.json.return_value = {"message": {"content": '{"game_mode": "不明"}'}}
         good_response.raise_for_status.return_value = None
 
         bad_response = MagicMock()
@@ -134,7 +212,7 @@ class TestBattleAnalyzer:
         results = analyzer.analyze_frames([good_frame, bad_frame])
 
         assert len(results) == 2
-        assert results[0]["analysis"] == "OK"
+        assert isinstance(results[0]["analysis"], dict)
         assert "[Error]" in results[1]["analysis"]
 
     @patch("src.battle_analyzer.requests.post")
@@ -152,7 +230,7 @@ class TestBattleAnalyzer:
             call_count[0] += 1
             response = MagicMock()
             response.status_code = 200
-            response.json.return_value = {"message": {"content": f"Result {call_count[0]}"}}
+            response.json.return_value = {"message": {"content": f'{{"result": {call_count[0]}}}'}}
             response.raise_for_status.return_value = None
             return response
 
@@ -161,7 +239,6 @@ class TestBattleAnalyzer:
         analyzer = BattleAnalyzer(base_url="http://localhost:11434", concurrency=1)
         results = analyzer.analyze_frames(paths)
 
-        # With concurrency=1, order should be deterministic
         assert len(results) == 3
         assert results[0]["timestamp"] == "00m00s"
         assert results[1]["timestamp"] == "00m10s"

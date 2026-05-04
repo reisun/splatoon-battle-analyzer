@@ -1,11 +1,21 @@
 """Tests for the CLI module."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.cli import format_timeline, parse_args, run
+from src.cli import (
+    _timestamp_to_seconds,
+    format_highlight_json,
+    format_highlight_text,
+    format_json_output,
+    format_timeline,
+    parse_args,
+    run,
+)
+from src.highlight_detector import HighlightSegment
 
 
 class TestParseArgs:
@@ -28,6 +38,9 @@ class TestParseArgs:
         assert args.end is None
         assert args.no_save is False
         assert args.concurrency == 4
+        assert args.model is None
+        assert args.output_format == "text"
+        assert args.output_file is None
 
     def test_all_arguments(self) -> None:
         """Parse all arguments."""
@@ -49,6 +62,12 @@ class TestParseArgs:
                 "120",
                 "--concurrency",
                 "8",
+                "--model",
+                "gemma3:12b",
+                "--output-format",
+                "json",
+                "--output-file",
+                "/tmp/result.json",
             ]
         )
         assert args.input == "game.mkv"
@@ -60,6 +79,9 @@ class TestParseArgs:
         assert args.start == 30.0
         assert args.end == 120.0
         assert args.concurrency == 8
+        assert args.model == "gemma3:12b"
+        assert args.output_format == "json"
+        assert args.output_file == "/tmp/result.json"
 
     def test_default_interval(self) -> None:
         """Default interval is 10 seconds."""
@@ -80,6 +102,42 @@ class TestParseArgs:
         """Parse --max-frames option."""
         args = parse_args(["--input", "v.mp4", "--max-frames", "50"])
         assert args.max_frames == 50
+
+    def test_model_option(self) -> None:
+        """Parse --model option."""
+        args = parse_args(["--input", "v.mp4", "--model", "llava:7b"])
+        assert args.model == "llava:7b"
+
+    def test_output_format_json(self) -> None:
+        """Parse --output-format json."""
+        args = parse_args(["--input", "v.mp4", "--output-format", "json"])
+        assert args.output_format == "json"
+
+    def test_output_format_invalid(self) -> None:
+        """Invalid --output-format raises error."""
+        with pytest.raises(SystemExit):
+            parse_args(["--input", "v.mp4", "--output-format", "xml"])
+
+    def test_output_file_option(self) -> None:
+        """Parse --output-file option."""
+        args = parse_args(["--input", "v.mp4", "--output-file", "out.json"])
+        assert args.output_file == "out.json"
+
+
+class TestTimestampToSeconds:
+    """Tests for _timestamp_to_seconds helper."""
+
+    def test_zero(self) -> None:
+        assert _timestamp_to_seconds("00m00s") == 0
+
+    def test_minutes_and_seconds(self) -> None:
+        assert _timestamp_to_seconds("02m30s") == 150
+
+    def test_large_timestamp(self) -> None:
+        assert _timestamp_to_seconds("30m00s") == 1800
+
+    def test_invalid_format(self) -> None:
+        assert _timestamp_to_seconds("invalid") == 0
 
 
 class TestFormatTimeline:
@@ -111,6 +169,45 @@ class TestFormatTimeline:
         assert "[00m10s]" in result
         assert "[00m20s]" in result
         assert "Total frames analyzed: 3" in result
+
+    def test_dict_analysis_formatted_as_json(self) -> None:
+        """Dict analysis is formatted as JSON in text output."""
+        results = [{"timestamp": "00m10s", "analysis": {"game_mode": "ナワバリバトル"}}]
+        result = format_timeline(results)
+        assert "ナワバリバトル" in result
+
+
+class TestFormatJsonOutput:
+    """Tests for JSON output formatting."""
+
+    def test_basic_json_output(self) -> None:
+        """Generate valid JSON output."""
+        results = [
+            {"timestamp": "00m00s", "analysis": {"game_mode": "ナワバリバトル"}},
+            {"timestamp": "01m00s", "analysis": {"game_mode": "不明"}},
+        ]
+        args = parse_args(["--input", "video.mp4", "--interval", "60"])
+        output = format_json_output(results, args, "llava-llama3")
+        data = json.loads(output)
+
+        assert data["video"] == "video.mp4"
+        assert data["model"] == "llava-llama3"
+        assert data["interval_seconds"] == 60.0
+        assert data["frames_analyzed"] == 2
+        assert len(data["timeline"]) == 2
+        assert data["timeline"][0]["seconds"] == 0
+        assert data["timeline"][1]["seconds"] == 60
+        assert data["timeline"][0]["analysis"]["game_mode"] == "ナワバリバトル"
+
+    def test_json_with_raw_string_analysis(self) -> None:
+        """Handle raw string analysis in JSON output."""
+        results = [{"timestamp": "02m30s", "analysis": "Could not parse"}]
+        args = parse_args(["--input", "game.mp4", "--interval", "10"])
+        output = format_json_output(results, args, "llava-llama3")
+        data = json.loads(output)
+
+        assert data["timeline"][0]["analysis"] == "Could not parse"
+        assert data["timeline"][0]["seconds"] == 150
 
 
 class TestRun:
@@ -190,8 +287,9 @@ class TestRun:
         mock_check_key.return_value = True
 
         mock_analyzer = MagicMock()
+        mock_analyzer.model = "llava-llama3"
         mock_analyzer.analyze_frames.return_value = [
-            {"timestamp": "00m00s", "analysis": "Turf War in progress"}
+            {"timestamp": "00m00s", "analysis": {"game_mode": "ナワバリバトル"}}
         ]
         mock_analyzer_cls.return_value = mock_analyzer
 
@@ -259,9 +357,253 @@ class TestRun:
         mock_check_key.return_value = True
 
         mock_analyzer = MagicMock()
-        mock_analyzer.analyze_frames.return_value = [{"timestamp": "00m00s", "analysis": "test"}]
+        mock_analyzer.model = "llava-llama3"
+        mock_analyzer.analyze_frames.return_value = [
+            {"timestamp": "00m00s", "analysis": {"game_mode": "test"}}
+        ]
         mock_analyzer_cls.return_value = mock_analyzer
 
         run(["--input", str(tmp_path / "test.mp4"), "--concurrency", "8"])
 
-        mock_analyzer_cls.assert_called_once_with(concurrency=8)
+        mock_analyzer_cls.assert_called_once_with(concurrency=8, model=None)
+
+    @patch("src.cli.BattleAnalyzer")
+    @patch("src.cli.check_api_key_available")
+    @patch("src.cli.extract_frames")
+    def test_model_passed_to_analyzer(
+        self,
+        mock_extract: MagicMock,
+        mock_check_key: MagicMock,
+        mock_analyzer_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Pass model to BattleAnalyzer."""
+        mock_extract.return_value = [tmp_path / "frame_00m00s.jpg"]
+        mock_check_key.return_value = True
+
+        mock_analyzer = MagicMock()
+        mock_analyzer.model = "gemma3:12b"
+        mock_analyzer.analyze_frames.return_value = [
+            {"timestamp": "00m00s", "analysis": {"game_mode": "test"}}
+        ]
+        mock_analyzer_cls.return_value = mock_analyzer
+
+        run(["--input", str(tmp_path / "test.mp4"), "--model", "gemma3:12b"])
+
+        mock_analyzer_cls.assert_called_once_with(concurrency=4, model="gemma3:12b")
+
+    @patch("src.cli.BattleAnalyzer")
+    @patch("src.cli.check_api_key_available")
+    @patch("src.cli.extract_frames")
+    def test_json_output_format(
+        self,
+        mock_extract: MagicMock,
+        mock_check_key: MagicMock,
+        mock_analyzer_cls: MagicMock,
+        tmp_path: Path,
+        capsys,
+    ) -> None:
+        """JSON output format produces valid JSON to stdout."""
+        mock_extract.return_value = [tmp_path / "frame_00m00s.jpg"]
+        mock_check_key.return_value = True
+
+        mock_analyzer = MagicMock()
+        mock_analyzer.model = "llava-llama3"
+        mock_analyzer.analyze_frames.return_value = [
+            {"timestamp": "00m00s", "analysis": {"game_mode": "ナワバリバトル"}}
+        ]
+        mock_analyzer_cls.return_value = mock_analyzer
+
+        result = run(
+            ["--input", str(tmp_path / "test.mp4"), "--output-format", "json", "--interval", "60"]
+        )
+
+        assert result == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["video"] == "test.mp4"
+        assert data["model"] == "llava-llama3"
+        assert data["frames_analyzed"] == 1
+
+    @patch("src.cli.BattleAnalyzer")
+    @patch("src.cli.check_api_key_available")
+    @patch("src.cli.extract_frames")
+    def test_output_file_writes_to_file(
+        self,
+        mock_extract: MagicMock,
+        mock_check_key: MagicMock,
+        mock_analyzer_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """--output-file writes output to specified file."""
+        mock_extract.return_value = [tmp_path / "frame_00m00s.jpg"]
+        mock_check_key.return_value = True
+
+        mock_analyzer = MagicMock()
+        mock_analyzer.model = "llava-llama3"
+        mock_analyzer.analyze_frames.return_value = [
+            {"timestamp": "00m00s", "analysis": {"game_mode": "test"}}
+        ]
+        mock_analyzer_cls.return_value = mock_analyzer
+
+        output_file = tmp_path / "result.json"
+        result = run(
+            [
+                "--input",
+                str(tmp_path / "test.mp4"),
+                "--output-format",
+                "json",
+                "--output-file",
+                str(output_file),
+            ]
+        )
+
+        assert result == 0
+        assert output_file.exists()
+        data = json.loads(output_file.read_text())
+        assert data["frames_analyzed"] == 1
+
+
+class TestHighlightModeArgs:
+    """Tests for highlight mode argument parsing."""
+
+    def test_mode_default_is_timeline(self) -> None:
+        args = parse_args(["--input", "v.mp4"])
+        assert args.mode == "timeline"
+
+    def test_mode_highlight(self) -> None:
+        args = parse_args(["--input", "v.mp4", "--mode", "highlight"])
+        assert args.mode == "highlight"
+
+    def test_stage1_interval_default(self) -> None:
+        args = parse_args(["--input", "v.mp4"])
+        assert args.stage1_interval == 30.0
+
+    def test_stage2_interval_default(self) -> None:
+        args = parse_args(["--input", "v.mp4"])
+        assert args.stage2_interval == 5.0
+
+    def test_threshold_default(self) -> None:
+        args = parse_args(["--input", "v.mp4"])
+        assert args.threshold == 5
+
+    def test_custom_highlight_args(self) -> None:
+        args = parse_args(
+            [
+                "--input",
+                "v.mp4",
+                "--mode",
+                "highlight",
+                "--stage1-interval",
+                "60",
+                "--stage2-interval",
+                "10",
+                "--threshold",
+                "7",
+            ]
+        )
+        assert args.stage1_interval == 60.0
+        assert args.stage2_interval == 10.0
+        assert args.threshold == 7
+
+
+class TestHighlightFormatting:
+    """Tests for highlight output formatting."""
+
+    def test_format_highlight_json(self) -> None:
+        highlights = [
+            HighlightSegment(
+                start_seconds=120.0,
+                end_seconds=155.0,
+                peak_intensity=8,
+                description="Multiple kills",
+            )
+        ]
+        summary = {"total_frames": 40, "battle_frames": 30, "candidate_frames": 8}
+        args = parse_args(["--input", "gameplay.mp4", "--mode", "highlight"])
+        output = format_highlight_json(highlights, summary, args, "llava-llama3")
+        data = json.loads(output)
+
+        assert data["video"] == "gameplay.mp4"
+        assert data["model"] == "llava-llama3"
+        assert data["mode"] == "highlight"
+        assert len(data["highlights"]) == 1
+        assert data["highlights"][0]["start_seconds"] == 120.0
+        assert data["highlights"][0]["peak_intensity"] == 8
+        assert data["stage1_summary"]["total_frames"] == 40
+
+    def test_format_highlight_text_no_highlights(self) -> None:
+        summary = {"total_frames": 10, "battle_frames": 0, "candidate_frames": 0}
+        output = format_highlight_text([], summary)
+        assert "No highlights detected." in output
+        assert "10 frames scanned" in output
+
+    def test_format_highlight_text_with_highlights(self) -> None:
+        highlights = [
+            HighlightSegment(
+                start_seconds=60.0,
+                end_seconds=90.0,
+                peak_intensity=9,
+                description="Team wipe",
+            )
+        ]
+        summary = {"total_frames": 20, "battle_frames": 15, "candidate_frames": 3}
+        output = format_highlight_text(highlights, summary)
+        assert "Highlight #1" in output
+        assert "60s - 90s" in output
+        assert "9" in output
+
+
+class TestHighlightModeRun:
+    """Tests for highlight mode execution."""
+
+    @patch("src.cli.HighlightDetector")
+    @patch("src.cli.check_api_key_available")
+    def test_highlight_mode_full_pipeline(
+        self,
+        mock_check: MagicMock,
+        mock_detector_cls: MagicMock,
+        tmp_path: Path,
+        capsys,
+    ) -> None:
+        mock_check.return_value = True
+
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = [
+            HighlightSegment(
+                start_seconds=30.0,
+                end_seconds=60.0,
+                peak_intensity=8,
+                description="Big play",
+            )
+        ]
+        mock_detector.stage1_summary = {
+            "total_frames": 10,
+            "battle_frames": 8,
+            "candidate_frames": 2,
+        }
+        mock_detector_cls.return_value = mock_detector
+
+        result = run(
+            [
+                "--input",
+                str(tmp_path / "test.mp4"),
+                "--mode",
+                "highlight",
+                "--output-format",
+                "json",
+            ]
+        )
+
+        assert result == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["mode"] == "highlight"
+        assert len(data["highlights"]) == 1
+        assert data["highlights"][0]["peak_intensity"] == 8
+
+    @patch("src.cli.check_api_key_available")
+    def test_highlight_mode_ollama_unreachable(self, mock_check: MagicMock, tmp_path: Path) -> None:
+        mock_check.return_value = False
+        result = run(["--input", str(tmp_path / "test.mp4"), "--mode", "highlight"])
+        assert result == 1
