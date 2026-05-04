@@ -38,3 +38,6 @@ Thumbs.db
 
 # Docker
 .docker/
+
+# test folder
+test/
