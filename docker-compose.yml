@@ -15,4 +15,4 @@ services:
 
 volumes:
   shared-data:
-    external: true
+    name: shared-data
