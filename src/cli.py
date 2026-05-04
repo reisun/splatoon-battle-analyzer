@@ -1,7 +1,7 @@
 """CLI entry point for Splatoon Battle Analyzer.
 
 Provides command-line interface to extract frames from gameplay videos
-and optionally analyze them using Ollama Vision API (llava-llama3).
+or RTMP streams and optionally analyze them using Ollama Vision API (llava-llama3).
 """
 
 import argparse
@@ -10,8 +10,12 @@ import logging
 import sys
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.frame_extractor import extract_frames
+from src.frame_source import FileFrameSource, FrameSource, StreamFrameSource
 from src.highlight_detector import HighlightDetector
 
 logger = logging.getLogger(__name__)
@@ -30,10 +34,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="splatoon-battle-analyzer",
         description="Analyze Splatoon gameplay videos using frame extraction and Ollama Vision API.",
     )
-    parser.add_argument(
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--input",
-        required=True,
+        default=None,
         help="Path to the input video file (mp4/mkv)",
+    )
+    source_group.add_argument(
+        "--stream",
+        default=None,
+        help="RTMP stream URL (e.g., rtmp://host:1935/live/stream)",
     )
     parser.add_argument(
         "--interval",
@@ -130,6 +140,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def create_frame_source(args: argparse.Namespace) -> FrameSource:
+    """Create the appropriate FrameSource based on CLI arguments."""
+    if args.stream:
+        return StreamFrameSource(stream_url=args.stream, interval_seconds=args.interval)
+    return FileFrameSource(video_path=args.input, interval_seconds=args.interval)
+
+
+def save_frames(source: FrameSource, output_dir: Path) -> list[Path]:
+    """Save frames from a FrameSource to disk."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+    for timestamp, frame in source.frames():
+        minutes = int(timestamp // 60)
+        seconds = int(timestamp % 60)
+        filename = f"frame_{minutes:02d}m{seconds:02d}s.jpg"
+        output_path = output_dir / filename
+        cv2.imwrite(str(output_path), frame)
+        saved_paths.append(output_path)
+        logger.info("Saved frame at %02d:%02d -> %s", minutes, seconds, filename)
+    return saved_paths
+
+
 def _timestamp_to_seconds(timestamp: str) -> int:
     """Convert timestamp like '02m30s' to seconds."""
     import re
@@ -222,13 +254,29 @@ def run(argv: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
 
-    video_path = Path(args.input)
     output_dir = Path(args.output_dir)
 
     # Validate: --no-save requires API analysis
     if args.no_save and args.frames_only:
         logger.error("--no-save cannot be used with --frames-only")
         return 1
+
+    # Stream mode: use FrameSource pipeline
+    if args.stream:
+        source = create_frame_source(args)
+        frame_paths = save_frames(source, output_dir)
+        if not frame_paths:
+            logger.warning("No frames were captured from stream.")
+            return 0
+        if args.frames_only:
+            print(f"\nExtracted {len(frame_paths)} frames to {output_dir}")
+            for p in frame_paths:
+                print(f"  {p}")
+            return 0
+        # TODO: stream + analysis mode
+        return 0
+
+    video_path = Path(args.input)
 
     # Highlight mode: use 2-stage pipeline
     if args.mode == "highlight":
