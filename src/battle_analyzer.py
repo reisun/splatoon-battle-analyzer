@@ -1,25 +1,27 @@
-"""Battle analysis module using Ollama Vision API (llava-llama3).
+"""Battle analysis module using Claude Code CLI.
 
-Sends frame images to Ollama REST API and extracts battle status information.
-Supports concurrent API calls for improved throughput.
+Sends frame images to Claude Vision via CLI subprocess and extracts battle status.
+Supports concurrent calls for improved throughput.
 """
 
-import base64
 import json
 import logging
 import os
 import re
+import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
 import numpy as np
-import requests
 
 logger = logging.getLogger(__name__)
 
 MAX_IMAGE_WIDTH = 960
 MAX_IMAGE_HEIGHT = 540
+
+DEFAULT_MODEL = "haiku"
 
 
 def _resize_if_needed(frame: np.ndarray) -> np.ndarray:
@@ -33,11 +35,14 @@ def _resize_if_needed(frame: np.ndarray) -> np.ndarray:
     return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
-def _encode_frame(frame: np.ndarray) -> str:
-    """Resize and encode a frame to base64 JPEG."""
+def _save_temp_frame(frame: np.ndarray) -> str:
+    """Save frame to a temporary JPEG file and return its path."""
     resized = _resize_if_needed(frame)
-    _, buffer = cv2.imencode(".jpg", resized)
-    return base64.standard_b64encode(buffer.tobytes()).decode("utf-8")
+    fd, path = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    cv2.imwrite(path, resized)
+    return path
+
 
 ANALYSIS_PROMPT = """あなたはスプラトゥーンのゲーム画面を分析するアシスタントです。
 以下のスクリーンショットから戦況を読み取り、JSON形式で回答してください。
@@ -60,17 +65,31 @@ ANALYSIS_PROMPT = """あなたはスプラトゥーンのゲーム画面を分�
 
 見えない項目は null としてください。推測せず、見えるものだけ報告してください。"""
 
-STAGE1_PROMPT = """Analyze this Splatoon gameplay screenshot. Answer in JSON only:
+STAGE1_PROMPT = """Analyze this Splatoon gameplay screenshot. Key UI elements:
+- Top center: match timer
+- Left of timer: 4 ally icons (grayed out = dead)
+- Right of timer: 4 enemy icons (grayed out = dead)
+- Below timer: game progress bars (lower count = winning)
+- Bottom center: kill log (multiple names = multi-kill streak)
+
+High intensity indicators: multi-kills in kill log, many enemies grayed out, count close to 0, special weapon effects.
+
+Answer in JSON only:
 {"scene": "battle", "intensity": 5, "reason": "brief description"}
 scene must be one of: battle, lobby, result, other
 intensity must be 1-10. If unsure, use lower intensity."""
 
-STAGE2_PROMPT = """Analyze this Splatoon battle screenshot in detail. Answer in JSON only:
-{"kills_visible": false, "deaths_visible": false, "special_active": false, "score_change": false, "team_wipe": false, "intensity": 5, "description": "what is happening"}
-Only report what you clearly see. intensity must be 1-10."""
+STAGE2_PROMPT = """Analyze this Splatoon battle screenshot in detail. Key UI elements:
+- Top center: match timer
+- Left of timer: 4 ally icons (grayed out = dead)
+- Right of timer: 4 enemy icons (grayed out = dead)
+- Below timer: game progress bars (lower count = winning)
+- Bottom center: kill log (multiple names = multi-kill streak)
 
-DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
-DEFAULT_OLLAMA_MODEL = "llava-llama3"
+Answer in JSON only:
+{"kills_in_log": 0, "allies_alive": 4, "enemies_alive": 4, "count_close": false, "special_active": false, "intensity": 5, "description": "what is happening"}
+kills_in_log: number of names visible in bottom-center kill log.
+Only report what you clearly see. intensity must be 1-10."""
 
 
 def parse_llm_response(text: str) -> dict | str:
@@ -92,59 +111,65 @@ def parse_llm_response(text: str) -> dict | str:
 
 
 class BattleAnalyzer:
-    """Analyzes Splatoon battle frames using Ollama Vision API."""
+    """Analyzes Splatoon battle frames using Claude Code CLI."""
 
     def __init__(
-        self, base_url: str | None = None, model: str | None = None, concurrency: int = 1
+        self, model: str | None = None, concurrency: int = 4, timeout: int = 120
     ) -> None:
-        """Initialize the analyzer with Ollama endpoint.
+        """Initialize the analyzer.
 
         Args:
-            base_url: Ollama API base URL. Falls back to OLLAMA_BASE_URL env var.
-            model: Model name. Falls back to OLLAMA_MODEL env var, then default.
-            concurrency: Maximum number of concurrent API calls.
+            model: Claude model name (default: env CLAUDE_MODEL or "haiku").
+            concurrency: Maximum number of concurrent CLI calls.
+            timeout: Timeout in seconds for each CLI call.
         """
-        self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL)
         if model:
             self.model = model
         else:
-            self.model = os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+            self.model = os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
         self.concurrency = concurrency
+        self.timeout = timeout
 
-    def _call_ollama(self, prompt: str, image_base64: str) -> str:
-        """Call Ollama /api/chat with an image.
+    def _call_cli(self, prompt: str, image_path: str) -> str:
+        """Call Claude Code CLI with an image file.
 
         Args:
             prompt: Text prompt to send.
-            image_base64: Base64-encoded image data.
+            image_path: Path to the image file for analysis.
 
         Returns:
             Response text from the model.
 
         Raises:
-            requests.HTTPError: If the API returns a non-2xx status.
+            RuntimeError: If the CLI call fails.
         """
-        url = f"{self.base_url}/api/chat"
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                    "images": [image_base64],
-                }
+        full_prompt = (
+            f"Read the image file at {image_path} and analyze it. "
+            f"Respond with ONLY the requested format, no extra text.\n\n{prompt}"
+        )
+
+        result = subprocess.run(
+            [
+                "claude",
+                "-p",
+                full_prompt,
+                "--dangerously-skip-permissions",
+                "--model",
+                self.model,
             ],
-            "stream": False,
-        }
+            capture_output=True,
+            text=True,
+            timeout=self.timeout,
+        )
 
-        response = requests.post(url, json=payload, timeout=300)
-        response.raise_for_status()
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or "Unknown error"
+            raise RuntimeError(f"Claude CLI failed: {error_msg}")
 
-        data = response.json()
-        return data["message"]["content"]
+        return result.stdout.strip()
 
     def analyze_frame(self, image_path: str | Path) -> dict | str:
-        """Analyze a single frame image using Ollama Vision API.
+        """Analyze a single frame image.
 
         Args:
             image_path: Path to the frame image file.
@@ -159,17 +184,13 @@ class BattleAnalyzer:
         if not image_path.exists():
             raise FileNotFoundError(f"Image file not found: {image_path}")
 
-        frame = cv2.imread(str(image_path))
-        image_data = _encode_frame(frame)
-
         logger.info("Analyzing frame: %s", image_path.name)
-
-        result = self._call_ollama(ANALYSIS_PROMPT, image_data)
+        result = self._call_cli(ANALYSIS_PROMPT, str(image_path.resolve()))
         logger.info("Analysis complete for: %s", image_path.name)
         return parse_llm_response(result)
 
     def analyze_frame_from_memory(self, frame: np.ndarray, timestamp: str) -> dict | str:
-        """Analyze a frame held in memory (numpy array) using Ollama Vision API.
+        """Analyze a frame held in memory (numpy array).
 
         Args:
             frame: Frame image as a numpy array (BGR format from OpenCV).
@@ -178,13 +199,14 @@ class BattleAnalyzer:
         Returns:
             Parsed analysis dict or raw string if parsing fails.
         """
-        image_data = _encode_frame(frame)
-
-        logger.info("Analyzing frame at %s (from memory)", timestamp)
-
-        result = self._call_ollama(ANALYSIS_PROMPT, image_data)
-        logger.info("Analysis complete for frame at %s", timestamp)
-        return parse_llm_response(result)
+        tmp_path = _save_temp_frame(frame)
+        try:
+            logger.info("Analyzing frame at %s", timestamp)
+            result = self._call_cli(ANALYSIS_PROMPT, tmp_path)
+            logger.info("Analysis complete for frame at %s", timestamp)
+            return parse_llm_response(result)
+        finally:
+            os.unlink(tmp_path)
 
     def analyze_frame_from_memory_with_prompt(
         self, frame: np.ndarray, prompt: str, timestamp: str
@@ -199,13 +221,14 @@ class BattleAnalyzer:
         Returns:
             Parsed analysis dict or raw string if parsing fails.
         """
-        image_data = _encode_frame(frame)
-
-        logger.info("Analyzing frame at %s with custom prompt", timestamp)
-
-        result = self._call_ollama(prompt, image_data)
-        logger.info("Analysis complete for frame at %s", timestamp)
-        return parse_llm_response(result)
+        tmp_path = _save_temp_frame(frame)
+        try:
+            logger.info("Analyzing frame at %s with custom prompt", timestamp)
+            result = self._call_cli(prompt, tmp_path)
+            logger.info("Analysis complete for frame at %s", timestamp)
+            return parse_llm_response(result)
+        finally:
+            os.unlink(tmp_path)
 
     def analyze_frames(self, image_paths: list[Path]) -> list[dict[str, str]]:
         """Analyze multiple frame images concurrently.
@@ -243,14 +266,18 @@ class BattleAnalyzer:
 
 
 def check_api_key_available() -> bool:
-    """Check if Ollama is reachable by calling /api/tags.
+    """Check if Claude Code CLI is available and authenticated.
 
     Returns:
-        True if Ollama responds successfully, False otherwise.
+        True if CLI is available, False otherwise.
     """
-    base_url = os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL)
     try:
-        response = requests.get(f"{base_url}/api/tags", timeout=5)
-        return response.status_code == 200
-    except (requests.ConnectionError, requests.Timeout):
+        result = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False

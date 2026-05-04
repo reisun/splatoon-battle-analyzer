@@ -3,6 +3,8 @@ services:
     build: .
     volumes:
       - .:/app
+      - ~/.claude.json:/home/appuser/.claude.json:ro
+      - ~/.claude:/home/appuser/.claude:ro
     env_file:
       - .env
     working_dir: /app

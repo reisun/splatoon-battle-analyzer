@@ -99,7 +99,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--model",
         type=str,
         default=None,
-        help="Ollama model name (default: env OLLAMA_MODEL or llava-llama3)",
+        help="Claude model name (default: env CLAUDE_MODEL or haiku)",
     )
     parser.add_argument(
         "--output-format",
@@ -319,12 +319,10 @@ def run(argv: list[str] | None = None) -> int:
         return 0
 
     if not check_api_key_available():
-        logger.warning(
-            "Ollama is not reachable. Use --frames-only or check OLLAMA_BASE_URL in .env"
-        )
+        logger.warning("Claude CLI is not available. Use --frames-only or install claude CLI.")
         if not args.no_save:
             print(f"\nExtracted {len(frame_paths)} frames to {output_dir}")
-        print("Ensure Ollama is running and OLLAMA_BASE_URL is correctly configured.")
+        print("Ensure 'claude' CLI is installed and authenticated.")
         return 1
 
     # Step 3: Analyze and output timeline
@@ -345,7 +343,9 @@ def run(argv: list[str] | None = None) -> int:
         output_text = format_timeline(results)
 
     if args.output_file:
-        Path(args.output_file).write_text(output_text, encoding="utf-8")
+        output_path = Path(args.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output_text, encoding="utf-8")
         logger.info("Output written to: %s", args.output_file)
     else:
         print(output_text)
@@ -356,7 +356,7 @@ def run(argv: list[str] | None = None) -> int:
 def _run_highlight_mode(args: argparse.Namespace) -> int:
     """Run the 2-stage highlight detection pipeline."""
     if not check_api_key_available():
-        logger.error("Ollama is not reachable. Check OLLAMA_BASE_URL.")
+        logger.error("Claude CLI is not available.")
         return 1
 
     analyzer = BattleAnalyzer(concurrency=args.concurrency, model=args.model)
@@ -385,7 +385,9 @@ def _run_highlight_mode(args: argparse.Namespace) -> int:
         output_text = format_highlight_text(highlights, detector.stage1_summary)
 
     if args.output_file:
-        Path(args.output_file).write_text(output_text, encoding="utf-8")
+        output_path = Path(args.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output_text, encoding="utf-8")
         logger.info("Output written to: %s", args.output_file)
     else:
         print(output_text)
