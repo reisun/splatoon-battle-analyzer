@@ -7,13 +7,12 @@ services:
       - .:/app
       - ~/.claude.json:/home/appuser/.claude.json:ro
       - ~/.claude:/home/appuser/.claude:ro
+      - shared-data:/shared-data
     env_file:
       - .env
     working_dir: /app
     restart: unless-stopped
-    networks:
-      - llm-network
 
-networks:
-  llm-network:
-    external: true
+volumes:
+  shared-data:
+    name: shared-data
