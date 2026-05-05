@@ -190,6 +190,73 @@ class TestDetectFlow:
         assert detector.stage1_summary["candidate_frames"] == 1
 
     @patch("src.highlight_detector.extract_frames")
+    def test_progress_callback_called(self, mock_extract: MagicMock) -> None:
+        """Progress callback is invoked for each stage."""
+        stage1_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
+        mock_extract.return_value = stage1_frames
+
+        analyzer = MagicMock()
+        analyzer.analyze_frame_from_memory_with_prompt.return_value = {
+            "scene": "lobby",
+            "intensity": 2,
+            "reason": "lobby screen",
+        }
+
+        progress_calls: list[tuple[int, int, int]] = []
+
+        def on_progress(phase: int, frames_done: int, frames_total: int) -> None:
+            progress_calls.append((phase, frames_done, frames_total))
+
+        detector = HighlightDetector(analyzer=analyzer, stage1_interval=30, threshold=5)
+        detector.detect("/fake/video.mp4", progress_callback=on_progress)
+
+        # Only stage 1 runs (no candidates for stage 2)
+        assert len(progress_calls) == 3
+        assert progress_calls[0] == (1, 1, 3)
+        assert progress_calls[1] == (1, 2, 3)
+        assert progress_calls[2] == (1, 3, 3)
+
+    @patch("src.highlight_detector.extract_frames")
+    def test_progress_callback_stage2(self, mock_extract: MagicMock) -> None:
+        """Progress callback reports both stage 1 and stage 2 progress."""
+        stage1_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
+        stage2_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
+
+        mock_extract.side_effect = [stage1_frames, stage2_frames]
+
+        call_count = [0]
+
+        def mock_analyze(frame, prompt, timestamp):
+            call_count[0] += 1
+            from src.battle_analyzer import STAGE1_PROMPT
+
+            if prompt == STAGE1_PROMPT:
+                if call_count[0] == 2:
+                    return {"scene": "battle", "intensity": 7, "reason": "intense fight"}
+                return {"scene": "battle", "intensity": 3, "reason": "calm"}
+            return {"intensity": 7, "description": "kills happening"}
+
+        analyzer = MagicMock()
+        analyzer.analyze_frame_from_memory_with_prompt.side_effect = mock_analyze
+
+        progress_calls: list[tuple[int, int, int]] = []
+
+        def on_progress(phase: int, frames_done: int, frames_total: int) -> None:
+            progress_calls.append((phase, frames_done, frames_total))
+
+        detector = HighlightDetector(
+            analyzer=analyzer, stage1_interval=30, stage2_interval=5, threshold=5
+        )
+        detector.detect("/fake/video.mp4", progress_callback=on_progress)
+
+        stage1_calls = [c for c in progress_calls if c[0] == 1]
+        stage2_calls = [c for c in progress_calls if c[0] == 2]
+        assert len(stage1_calls) == 4
+        assert len(stage2_calls) == 3
+        # Stage 2 final call should have frames_done == frames_total
+        assert stage2_calls[-1][1] == stage2_calls[-1][2]
+
+    @patch("src.highlight_detector.extract_frames")
     def test_battle_below_threshold_not_candidate(self, mock_extract: MagicMock) -> None:
         mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 2
 

@@ -1,11 +1,14 @@
 """Two-stage highlight detection for Splatoon gameplay videos."""
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.battle_analyzer import STAGE1_PROMPT, STAGE2_PROMPT, BattleAnalyzer
 from src.frame_extractor import extract_frames
+
+ProgressCallback = Callable[[int, int, int], None]  # (phase, frames_done, frames_total)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,7 @@ class HighlightDetector:
         video_path: str | Path,
         start_seconds: float | None = None,
         end_seconds: float | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> list[HighlightSegment]:
         video_path = Path(video_path)
 
@@ -78,6 +82,9 @@ class HighlightDetector:
                     if intensity >= self.threshold:
                         candidates.append((timestamp_sec, intensity))
 
+            if progress_callback:
+                progress_callback(1, i + 1, len(stage1_frames))
+
         # Select top N by intensity
         candidates.sort(key=lambda x: x[1], reverse=True)
         top_candidates = candidates[: self.max_highlights]
@@ -96,6 +103,9 @@ class HighlightDetector:
         regions = self._build_regions(candidate_timestamps, start_seconds, end_seconds)
         stage2_results: list[tuple[float, dict | str]] = []
 
+        # Pre-extract all Stage 2 frames to know total count for progress
+        all_stage2_frames: list[tuple[float, list]] = []
+        total_stage2_frames = 0
         for region_start, region_end in regions:
             frames = extract_frames(
                 video_path=video_path,
@@ -104,6 +114,11 @@ class HighlightDetector:
                 start_seconds=region_start,
                 end_seconds=region_end,
             )
+            all_stage2_frames.append((region_start, frames))
+            total_stage2_frames += len(frames)
+
+        stage2_done = 0
+        for region_start, frames in all_stage2_frames:
             for i, frame in enumerate(frames):
                 timestamp_sec = region_start + i * self.stage2_interval
                 ts_label = self._format_timestamp(timestamp_sec)
@@ -115,6 +130,10 @@ class HighlightDetector:
                     logger.exception("Stage 2 failed for frame at %s", ts_label)
                     result = {"intensity": 0, "description": "analysis failed"}
                 stage2_results.append((timestamp_sec, result))
+
+                stage2_done += 1
+                if progress_callback:
+                    progress_callback(2, stage2_done, total_stage2_frames)
 
         # Merge into segments and filter by threshold
         segments = self._merge_segments(stage2_results)
