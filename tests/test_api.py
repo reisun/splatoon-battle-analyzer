@@ -67,8 +67,8 @@ class TestAnalyzeHighlightsEndpoint:
                 "file_path": str(video),
                 "start": 60.0,
                 "end": 180.0,
-                "threshold": 5,
-                "max_highlights": 3,
+                "threshold": 100,
+                "max_highlights": 4,
             },
         )
         assert response.status_code == 200

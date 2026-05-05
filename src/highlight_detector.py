@@ -12,6 +12,29 @@ ProgressCallback = Callable[[int, int, int], None]  # (phase, frames_done, frame
 
 logger = logging.getLogger(__name__)
 
+MAX_CLIP_SECONDS = 15
+MAX_TOTAL_SECONDS = 60
+
+
+def _compute_score(result: dict) -> int:
+    """5項目の掛け算でスコアを計算（1-100000）."""
+    kills = max(1, min(10, result.get("kills", 1)))
+    assists = max(1, min(10, result.get("assists", 1)))
+    score_gain = max(1, min(10, result.get("score_gain", 1)))
+    clutch = max(1, min(10, result.get("clutch", 1)))
+    special = max(1, min(10, result.get("special", 1)))
+    return kills * assists * score_gain * clutch * special
+
+
+def _cap_segment_duration(segment: "HighlightSegment") -> "HighlightSegment":
+    """Cap a segment to MAX_CLIP_SECONDS, centered on the midpoint."""
+    duration = segment.end_seconds - segment.start_seconds
+    if duration > MAX_CLIP_SECONDS:
+        center = (segment.start_seconds + segment.end_seconds) / 2
+        segment.start_seconds = max(0, center - MAX_CLIP_SECONDS / 2)
+        segment.end_seconds = center + MAX_CLIP_SECONDS / 2
+    return segment
+
 
 @dataclass
 class HighlightSegment:
@@ -28,9 +51,9 @@ class HighlightDetector:
         self,
         analyzer: BattleAnalyzer,
         stage1_interval: float = 30,
-        stage2_interval: float = 5,
-        threshold: int = 5,
-        max_highlights: int = 3,
+        stage2_interval: float = 3,
+        threshold: int = 100,
+        max_highlights: int = 4,
     ) -> None:
         self.analyzer = analyzer
         self.stage1_interval = stage1_interval
@@ -71,21 +94,20 @@ class HighlightDetector:
                 )
             except Exception:
                 logger.exception("Stage 1 failed for frame at %s", ts_label)
-                result = {"scene": "other", "intensity": 0, "reason": "analysis failed"}
+                result = {"scene": "other", "kills": 1, "reason": "analysis failed"}
             stage1_results.append((timestamp_sec, result))
 
             if isinstance(result, dict):
                 scene = result.get("scene", "other")
-                intensity = result.get("intensity", 0)
                 if scene == "battle":
                     battle_count += 1
-                    if intensity >= self.threshold:
-                        candidates.append((timestamp_sec, intensity))
+                    score = _compute_score(result)
+                    candidates.append((timestamp_sec, score))
 
             if progress_callback:
                 progress_callback(1, i + 1, len(stage1_frames))
 
-        # Select top N by intensity
+        # Select top N by score
         candidates.sort(key=lambda x: x[1], reverse=True)
         top_candidates = candidates[: self.max_highlights]
         candidate_timestamps = [ts for ts, _ in top_candidates]
@@ -128,7 +150,7 @@ class HighlightDetector:
                     )
                 except Exception:
                     logger.exception("Stage 2 failed for frame at %s", ts_label)
-                    result = {"intensity": 0, "description": "analysis failed"}
+                    result = {"kills": 1, "description": "analysis failed"}
                 stage2_results.append((timestamp_sec, result))
 
                 stage2_done += 1
@@ -137,7 +159,23 @@ class HighlightDetector:
 
         # Merge into segments and filter by threshold
         segments = self._merge_segments(stage2_results)
-        return [s for s in segments if s.peak_intensity >= self.threshold]
+        segments = [s for s in segments if s.peak_intensity >= self.threshold]
+
+        # Cap each segment duration and enforce total time limit
+        segments = [_cap_segment_duration(s) for s in segments]
+        total = sum(s.end_seconds - s.start_seconds for s in segments)
+        if total > MAX_TOTAL_SECONDS:
+            segments.sort(key=lambda s: s.peak_intensity, reverse=True)
+            result_segments: list[HighlightSegment] = []
+            remaining = MAX_TOTAL_SECONDS
+            for s in segments:
+                dur = s.end_seconds - s.start_seconds
+                if dur <= remaining:
+                    result_segments.append(s)
+                    remaining -= dur
+            segments = sorted(result_segments, key=lambda s: s.start_seconds)
+
+        return segments
 
     def _build_regions(
         self,
@@ -175,7 +213,7 @@ class HighlightDetector:
     def _merge_segments(
         self, results: list[tuple[float, dict | str]]
     ) -> list[HighlightSegment]:
-        """Merge consecutive high-intensity frames into highlight segments."""
+        """Merge consecutive high-score frames into highlight segments."""
         if not results:
             return []
 
@@ -187,17 +225,17 @@ class HighlightDetector:
         current_descriptions: list[str] = []
 
         for timestamp, result in results:
-            intensity = 0
+            score = 0
             description = ""
             if isinstance(result, dict):
-                intensity = result.get("intensity", 0)
+                score = _compute_score(result)
                 description = result.get("description", "")
 
-            if intensity >= self.threshold:
+            if score >= self.threshold:
                 if current_start is None:
                     current_start = timestamp
                 current_end = timestamp
-                current_peak = max(current_peak, intensity)
+                current_peak = max(current_peak, score)
                 if description:
                     current_descriptions.append(description)
             else:
