@@ -17,26 +17,26 @@ class TestComputeScore:
     """Tests for _compute_score helper."""
 
     def test_all_ones(self) -> None:
-        result = {"kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1}
+        result = {"kills": 1, "assists": 1, "score_gain": 1, "special": 1}
         assert _compute_score(result) == 1
 
     def test_all_tens(self) -> None:
-        result = {"kills": 10, "assists": 10, "score_gain": 10, "clutch": 10, "special": 10}
-        assert _compute_score(result) == 100000
+        result = {"kills": 10, "assists": 10, "score_gain": 10, "special": 10}
+        assert _compute_score(result) == 10000
 
     def test_mixed_values(self) -> None:
-        result = {"kills": 5, "assists": 2, "score_gain": 3, "clutch": 1, "special": 4}
-        assert _compute_score(result) == 5 * 2 * 3 * 1 * 4
+        result = {"kills": 5, "assists": 2, "score_gain": 3, "special": 4}
+        assert _compute_score(result) == 5 * 2 * 3 * 4
 
     def test_missing_keys_default_to_one(self) -> None:
         assert _compute_score({}) == 1
 
     def test_clamps_below_one(self) -> None:
-        result = {"kills": 0, "assists": -5, "score_gain": 1, "clutch": 1, "special": 1}
+        result = {"kills": 0, "assists": -5, "score_gain": 1, "special": 1}
         assert _compute_score(result) == 1
 
     def test_clamps_above_ten(self) -> None:
-        result = {"kills": 99, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1}
+        result = {"kills": 99, "assists": 1, "score_gain": 1, "special": 1}
         assert _compute_score(result) == 10
 
 
@@ -157,16 +157,15 @@ class TestMergeSegments:
     def test_single_high_score_frame(self) -> None:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
-        # score = 5*3*2*2*2 = 120, above threshold 100
+        # score = 5*4*2*3 = 120, above threshold 100
         results = [
             (
                 10.0,
                 {
                     "kills": 5,
-                    "assists": 3,
+                    "assists": 4,
                     "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
+                    "special": 3,
                     "description": "action",
                 },
             )
@@ -186,10 +185,9 @@ class TestMergeSegments:
                 10.0,
                 {
                     "kills": 5,
-                    "assists": 3,
+                    "assists": 4,
                     "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
+                    "special": 3,
                     "description": "start",
                 },
             ),
@@ -197,10 +195,9 @@ class TestMergeSegments:
                 13.0,
                 {
                     "kills": 8,
-                    "assists": 3,
+                    "assists": 4,
                     "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
+                    "special": 3,
                     "description": "peak",
                 },
             ),
@@ -208,10 +205,9 @@ class TestMergeSegments:
                 16.0,
                 {
                     "kills": 5,
-                    "assists": 3,
+                    "assists": 4,
                     "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
+                    "special": 3,
                     "description": "end",
                 },
             ),
@@ -220,7 +216,7 @@ class TestMergeSegments:
         assert len(segments) == 1
         assert segments[0].start_seconds == 10.0
         assert segments[0].end_seconds == 19.0
-        assert segments[0].peak_intensity == 8 * 3 * 2 * 2 * 2
+        assert segments[0].peak_intensity == 8 * 4 * 2 * 3
 
     def test_low_score_splits_segments(self) -> None:
         analyzer = MagicMock()
@@ -230,10 +226,9 @@ class TestMergeSegments:
                 10.0,
                 {
                     "kills": 5,
-                    "assists": 3,
+                    "assists": 4,
                     "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
+                    "special": 3,
                     "description": "first",
                 },
             ),
@@ -243,7 +238,6 @@ class TestMergeSegments:
                     "kills": 1,
                     "assists": 1,
                     "score_gain": 1,
-                    "clutch": 1,
                     "special": 1,
                     "description": "low",
                 },
@@ -254,7 +248,6 @@ class TestMergeSegments:
                     "kills": 1,
                     "assists": 1,
                     "score_gain": 1,
-                    "clutch": 1,
                     "special": 1,
                     "description": "low",
                 },
@@ -265,7 +258,6 @@ class TestMergeSegments:
                     "kills": 1,
                     "assists": 1,
                     "score_gain": 1,
-                    "clutch": 1,
                     "special": 1,
                     "description": "low",
                 },
@@ -274,10 +266,9 @@ class TestMergeSegments:
                 22.0,
                 {
                     "kills": 8,
-                    "assists": 3,
+                    "assists": 4,
                     "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
+                    "special": 3,
                     "description": "second",
                 },
             ),
@@ -293,10 +284,9 @@ class TestMergeSegments:
                 10.0,
                 {
                     "kills": 5,
-                    "assists": 3,
+                    "assists": 4,
                     "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
+                    "special": 3,
                     "description": "action",
                 },
             ),
@@ -307,10 +297,9 @@ class TestMergeSegments:
                 22.0,
                 {
                     "kills": 5,
-                    "assists": 3,
+                    "assists": 4,
                     "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
+                    "special": 3,
                     "description": "more action",
                 },
             ),
@@ -332,7 +321,6 @@ class TestDetectFlow:
             "kills": 1,
             "assists": 1,
             "score_gain": 1,
-            "clutch": 1,
             "special": 1,
             "reason": "lobby screen",
         }
@@ -363,10 +351,9 @@ class TestDetectFlow:
                     return {
                         "scene": "battle",
                         "kills": 5,
-                        "assists": 3,
+                        "assists": 4,
                         "score_gain": 2,
-                        "clutch": 2,
-                        "special": 2,
+                        "special": 3,
                         "reason": "intense fight",
                     }
                 return {
@@ -374,16 +361,14 @@ class TestDetectFlow:
                     "kills": 1,
                     "assists": 1,
                     "score_gain": 1,
-                    "clutch": 1,
                     "special": 1,
                     "reason": "calm",
                 }
             return {
                 "kills": 5,
-                "assists": 3,
+                "assists": 4,
                 "score_gain": 2,
-                "clutch": 2,
-                "special": 2,
+                "special": 3,
                 "description": "kills happening",
             }
 
@@ -413,7 +398,6 @@ class TestDetectFlow:
             "kills": 1,
             "assists": 1,
             "score_gain": 1,
-            "clutch": 1,
             "special": 1,
             "reason": "lobby screen",
         }
@@ -451,10 +435,9 @@ class TestDetectFlow:
                     return {
                         "scene": "battle",
                         "kills": 5,
-                        "assists": 3,
+                        "assists": 4,
                         "score_gain": 2,
-                        "clutch": 2,
-                        "special": 2,
+                        "special": 3,
                         "reason": "intense fight",
                     }
                 return {
@@ -462,16 +445,14 @@ class TestDetectFlow:
                     "kills": 1,
                     "assists": 1,
                     "score_gain": 1,
-                    "clutch": 1,
                     "special": 1,
                     "reason": "calm",
                 }
             return {
                 "kills": 5,
-                "assists": 3,
+                "assists": 4,
                 "score_gain": 2,
-                "clutch": 2,
-                "special": 2,
+                "special": 3,
                 "description": "kills happening",
             }
 
@@ -512,7 +493,6 @@ class TestDetectFlow:
                     "kills": 1,
                     "assists": 1,
                     "score_gain": 1,
-                    "clutch": 1,
                     "special": 1,
                     "reason": "low action",
                 }
@@ -520,7 +500,6 @@ class TestDetectFlow:
                 "kills": 1,
                 "assists": 1,
                 "score_gain": 1,
-                "clutch": 1,
                 "special": 1,
                 "description": "nothing happening",
             }

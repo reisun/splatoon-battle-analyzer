@@ -76,11 +76,10 @@ Score each factor from 1 (nothing notable) to 10 (extremely intense):
 - kills: Did the player eliminate enemies? Check kill log at bottom center.
 - assists: Did the player assist in eliminating enemies?
 - score_gain: Is the player's team score increasing noticeably?
-- clutch: Is the team losing AND the score is NOT improving? (high = desperate/tense situation)
 - special: Is a special weapon being activated or its effects visible?
 
 Answer in JSON only:
-{"scene": "battle", "kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1, "reason": "brief description"}
+{"scene": "battle", "kills": 1, "assists": 1, "score_gain": 1, "special": 1, "reason": "brief description"}
 scene must be one of: battle, lobby, result, other
 All scores must be 1-10. If unsure, use 1."""
 
@@ -95,11 +94,10 @@ Score each factor from 1 (nothing notable) to 10 (extremely intense):
 - kills: Did the player eliminate enemies? Check kill log at bottom center.
 - assists: Did the player assist in eliminating enemies?
 - score_gain: Is the player's team score increasing noticeably?
-- clutch: Is the team losing AND the score is NOT improving? (high = desperate/tense situation)
 - special: Is a special weapon being activated or its effects visible?
 
 Answer in JSON only:
-{"kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1, "description": "what is happening"}
+{"kills": 1, "assists": 1, "score_gain": 1, "special": 1, "description": "what is happening"}
 All scores must be 1-10. If unsure, use 1."""
 
 
