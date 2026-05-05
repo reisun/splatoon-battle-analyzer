@@ -72,12 +72,17 @@ STAGE1_PROMPT = """Analyze this Splatoon gameplay screenshot. Key UI elements:
 - Below timer: game progress bars (lower count = winning)
 - Bottom center: kill log (multiple names = multi-kill streak)
 
-High intensity indicators: multi-kills in kill log, many enemies grayed out, count close to 0, special weapon effects.
+Score each factor from 1 (nothing notable) to 10 (extremely intense):
+- kills: Did the player eliminate enemies? Check kill log at bottom center.
+- assists: Did the player assist in eliminating enemies?
+- score_gain: Is the player's team score increasing noticeably?
+- clutch: Is the team losing AND the score is NOT improving? (high = desperate/tense situation)
+- special: Is a special weapon being activated or its effects visible?
 
 Answer in JSON only:
-{"scene": "battle", "intensity": 5, "reason": "brief description"}
+{"scene": "battle", "kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1, "reason": "brief description"}
 scene must be one of: battle, lobby, result, other
-intensity must be 1-10. If unsure, use lower intensity."""
+All scores must be 1-10. If unsure, use 1."""
 
 STAGE2_PROMPT = """Analyze this Splatoon battle screenshot in detail. Key UI elements:
 - Top center: match timer
@@ -86,10 +91,16 @@ STAGE2_PROMPT = """Analyze this Splatoon battle screenshot in detail. Key UI ele
 - Below timer: game progress bars (lower count = winning)
 - Bottom center: kill log (multiple names = multi-kill streak)
 
+Score each factor from 1 (nothing notable) to 10 (extremely intense):
+- kills: Did the player eliminate enemies? Check kill log at bottom center.
+- assists: Did the player assist in eliminating enemies?
+- score_gain: Is the player's team score increasing noticeably?
+- clutch: Is the team losing AND the score is NOT improving? (high = desperate/tense situation)
+- special: Is a special weapon being activated or its effects visible?
+
 Answer in JSON only:
-{"kills_in_log": 0, "allies_alive": 4, "enemies_alive": 4, "count_close": false, "special_active": false, "intensity": 5, "description": "what is happening"}
-kills_in_log: number of names visible in bottom-center kill log.
-Only report what you clearly see. intensity must be 1-10."""
+{"kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1, "description": "what is happening"}
+All scores must be 1-10. If unsure, use 1."""
 
 
 def parse_llm_response(text: str) -> dict | str:

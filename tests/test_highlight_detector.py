@@ -4,7 +4,75 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from src.highlight_detector import HighlightDetector, HighlightSegment
+from src.highlight_detector import (
+    MAX_CLIP_SECONDS,
+    HighlightDetector,
+    HighlightSegment,
+    _cap_segment_duration,
+    _compute_score,
+)
+
+
+class TestComputeScore:
+    """Tests for _compute_score helper."""
+
+    def test_all_ones(self) -> None:
+        result = {"kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1}
+        assert _compute_score(result) == 1
+
+    def test_all_tens(self) -> None:
+        result = {"kills": 10, "assists": 10, "score_gain": 10, "clutch": 10, "special": 10}
+        assert _compute_score(result) == 100000
+
+    def test_mixed_values(self) -> None:
+        result = {"kills": 5, "assists": 2, "score_gain": 3, "clutch": 1, "special": 4}
+        assert _compute_score(result) == 5 * 2 * 3 * 1 * 4
+
+    def test_missing_keys_default_to_one(self) -> None:
+        assert _compute_score({}) == 1
+
+    def test_clamps_below_one(self) -> None:
+        result = {"kills": 0, "assists": -5, "score_gain": 1, "clutch": 1, "special": 1}
+        assert _compute_score(result) == 1
+
+    def test_clamps_above_ten(self) -> None:
+        result = {"kills": 99, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1}
+        assert _compute_score(result) == 10
+
+
+class TestCapSegmentDuration:
+    """Tests for _cap_segment_duration helper."""
+
+    def test_short_segment_unchanged(self) -> None:
+        seg = HighlightSegment(
+            start_seconds=10.0, end_seconds=20.0, peak_intensity=100, description="x"
+        )
+        result = _cap_segment_duration(seg)
+        assert result.start_seconds == 10.0
+        assert result.end_seconds == 20.0
+
+    def test_long_segment_capped(self) -> None:
+        seg = HighlightSegment(
+            start_seconds=0.0, end_seconds=30.0, peak_intensity=100, description="x"
+        )
+        result = _cap_segment_duration(seg)
+        assert result.end_seconds - result.start_seconds == MAX_CLIP_SECONDS
+
+    def test_cap_centers_on_midpoint(self) -> None:
+        seg = HighlightSegment(
+            start_seconds=10.0, end_seconds=40.0, peak_intensity=100, description="x"
+        )
+        result = _cap_segment_duration(seg)
+        center = (10.0 + 40.0) / 2
+        assert result.start_seconds == center - MAX_CLIP_SECONDS / 2
+        assert result.end_seconds == center + MAX_CLIP_SECONDS / 2
+
+    def test_cap_does_not_go_below_zero(self) -> None:
+        seg = HighlightSegment(
+            start_seconds=0.0, end_seconds=20.0, peak_intensity=100, description="x"
+        )
+        result = _cap_segment_duration(seg)
+        assert result.start_seconds >= 0
 
 
 class TestHighlightSegment:
@@ -12,11 +80,11 @@ class TestHighlightSegment:
 
     def test_creation(self) -> None:
         seg = HighlightSegment(
-            start_seconds=10.0, end_seconds=25.0, peak_intensity=8, description="test"
+            start_seconds=10.0, end_seconds=25.0, peak_intensity=800, description="test"
         )
         assert seg.start_seconds == 10.0
         assert seg.end_seconds == 25.0
-        assert seg.peak_intensity == 8
+        assert seg.peak_intensity == 800
         assert seg.description == "test"
 
 
@@ -27,17 +95,18 @@ class TestHighlightDetectorInit:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer)
         assert detector.stage1_interval == 30
-        assert detector.stage2_interval == 5
-        assert detector.threshold == 5
+        assert detector.stage2_interval == 3
+        assert detector.threshold == 100
+        assert detector.max_highlights == 4
 
     def test_custom_params(self) -> None:
         analyzer = MagicMock()
         detector = HighlightDetector(
-            analyzer=analyzer, stage1_interval=60, stage2_interval=10, threshold=7
+            analyzer=analyzer, stage1_interval=60, stage2_interval=10, threshold=200
         )
         assert detector.stage1_interval == 60
         assert detector.stage2_interval == 10
-        assert detector.threshold == 7
+        assert detector.threshold == 200
 
 
 class TestBuildRegions:
@@ -85,52 +154,166 @@ class TestMergeSegments:
         segments = detector._merge_segments([])
         assert segments == []
 
-    def test_single_high_intensity_frame(self) -> None:
+    def test_single_high_score_frame(self) -> None:
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, stage2_interval=5, threshold=5)
-        results = [(10.0, {"intensity": 7, "description": "action"})]
-        segments = detector._merge_segments(results)
-        assert len(segments) == 1
-        assert segments[0].start_seconds == 10.0
-        assert segments[0].end_seconds == 15.0
-        assert segments[0].peak_intensity == 7
-
-    def test_consecutive_frames_merge(self) -> None:
-        analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, stage2_interval=5, threshold=5)
+        detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
+        # score = 5*3*2*2*2 = 120, above threshold 100
         results = [
-            (10.0, {"intensity": 6, "description": "start"}),
-            (15.0, {"intensity": 8, "description": "peak"}),
-            (20.0, {"intensity": 7, "description": "end"}),
+            (
+                10.0,
+                {
+                    "kills": 5,
+                    "assists": 3,
+                    "score_gain": 2,
+                    "clutch": 2,
+                    "special": 2,
+                    "description": "action",
+                },
+            )
         ]
         segments = detector._merge_segments(results)
         assert len(segments) == 1
         assert segments[0].start_seconds == 10.0
-        assert segments[0].end_seconds == 25.0
-        assert segments[0].peak_intensity == 8
+        assert segments[0].end_seconds == 13.0
+        assert segments[0].peak_intensity == 120
 
-    def test_low_intensity_splits_segments(self) -> None:
+    def test_consecutive_frames_merge(self) -> None:
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, stage2_interval=5, threshold=5)
+        detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
+        # All scores above 100
         results = [
-            (10.0, {"intensity": 7, "description": "first"}),
-            (15.0, {"intensity": 2, "description": "low"}),
-            (20.0, {"intensity": 2, "description": "low"}),
-            (25.0, {"intensity": 2, "description": "low"}),
-            (30.0, {"intensity": 8, "description": "second"}),
+            (
+                10.0,
+                {
+                    "kills": 5,
+                    "assists": 3,
+                    "score_gain": 2,
+                    "clutch": 2,
+                    "special": 2,
+                    "description": "start",
+                },
+            ),
+            (
+                13.0,
+                {
+                    "kills": 8,
+                    "assists": 3,
+                    "score_gain": 2,
+                    "clutch": 2,
+                    "special": 2,
+                    "description": "peak",
+                },
+            ),
+            (
+                16.0,
+                {
+                    "kills": 5,
+                    "assists": 3,
+                    "score_gain": 2,
+                    "clutch": 2,
+                    "special": 2,
+                    "description": "end",
+                },
+            ),
+        ]
+        segments = detector._merge_segments(results)
+        assert len(segments) == 1
+        assert segments[0].start_seconds == 10.0
+        assert segments[0].end_seconds == 19.0
+        assert segments[0].peak_intensity == 8 * 3 * 2 * 2 * 2
+
+    def test_low_score_splits_segments(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
+        results = [
+            (
+                10.0,
+                {
+                    "kills": 5,
+                    "assists": 3,
+                    "score_gain": 2,
+                    "clutch": 2,
+                    "special": 2,
+                    "description": "first",
+                },
+            ),
+            (
+                13.0,
+                {
+                    "kills": 1,
+                    "assists": 1,
+                    "score_gain": 1,
+                    "clutch": 1,
+                    "special": 1,
+                    "description": "low",
+                },
+            ),
+            (
+                16.0,
+                {
+                    "kills": 1,
+                    "assists": 1,
+                    "score_gain": 1,
+                    "clutch": 1,
+                    "special": 1,
+                    "description": "low",
+                },
+            ),
+            (
+                19.0,
+                {
+                    "kills": 1,
+                    "assists": 1,
+                    "score_gain": 1,
+                    "clutch": 1,
+                    "special": 1,
+                    "description": "low",
+                },
+            ),
+            (
+                22.0,
+                {
+                    "kills": 8,
+                    "assists": 3,
+                    "score_gain": 2,
+                    "clutch": 2,
+                    "special": 2,
+                    "description": "second",
+                },
+            ),
         ]
         segments = detector._merge_segments(results)
         assert len(segments) == 2
 
     def test_non_dict_result_treated_as_zero(self) -> None:
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, stage2_interval=5, threshold=5)
+        detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
         results = [
-            (10.0, {"intensity": 7, "description": "action"}),
-            (15.0, "parse error"),
-            (20.0, "parse error"),
-            (25.0, "parse error"),
-            (30.0, {"intensity": 6, "description": "more action"}),
+            (
+                10.0,
+                {
+                    "kills": 5,
+                    "assists": 3,
+                    "score_gain": 2,
+                    "clutch": 2,
+                    "special": 2,
+                    "description": "action",
+                },
+            ),
+            (13.0, "parse error"),
+            (16.0, "parse error"),
+            (19.0, "parse error"),
+            (
+                22.0,
+                {
+                    "kills": 5,
+                    "assists": 3,
+                    "score_gain": 2,
+                    "clutch": 2,
+                    "special": 2,
+                    "description": "more action",
+                },
+            ),
         ]
         segments = detector._merge_segments(results)
         assert len(segments) == 2
@@ -146,11 +329,15 @@ class TestDetectFlow:
         analyzer = MagicMock()
         analyzer.analyze_frame_from_memory_with_prompt.return_value = {
             "scene": "lobby",
-            "intensity": 2,
+            "kills": 1,
+            "assists": 1,
+            "score_gain": 1,
+            "clutch": 1,
+            "special": 1,
             "reason": "lobby screen",
         }
 
-        detector = HighlightDetector(analyzer=analyzer, stage1_interval=30, threshold=5)
+        detector = HighlightDetector(analyzer=analyzer, stage1_interval=30, threshold=100)
         segments = detector.detect("/fake/video.mp4")
 
         assert segments == []
@@ -173,21 +360,46 @@ class TestDetectFlow:
 
             if prompt == STAGE1_PROMPT:
                 if call_count[0] == 2:
-                    return {"scene": "battle", "intensity": 7, "reason": "intense fight"}
-                return {"scene": "battle", "intensity": 3, "reason": "calm"}
-            return {"intensity": 7, "description": "kills happening"}
+                    return {
+                        "scene": "battle",
+                        "kills": 5,
+                        "assists": 3,
+                        "score_gain": 2,
+                        "clutch": 2,
+                        "special": 2,
+                        "reason": "intense fight",
+                    }
+                return {
+                    "scene": "battle",
+                    "kills": 1,
+                    "assists": 1,
+                    "score_gain": 1,
+                    "clutch": 1,
+                    "special": 1,
+                    "reason": "calm",
+                }
+            return {
+                "kills": 5,
+                "assists": 3,
+                "score_gain": 2,
+                "clutch": 2,
+                "special": 2,
+                "description": "kills happening",
+            }
 
         analyzer = MagicMock()
         analyzer.analyze_frame_from_memory_with_prompt.side_effect = mock_analyze
 
         detector = HighlightDetector(
-            analyzer=analyzer, stage1_interval=30, stage2_interval=5, threshold=5
+            analyzer=analyzer, stage1_interval=30, stage2_interval=3, threshold=100
         )
         segments = detector.detect("/fake/video.mp4")
 
         assert len(segments) >= 1
         assert detector.stage1_summary["total_frames"] == 4
-        assert detector.stage1_summary["candidate_frames"] == 1
+        # All 4 are battle frames, but only 1 has score > 1
+        # Actually all are candidates (score>=1), top 4 selected
+        assert detector.stage1_summary["candidate_frames"] == 4
 
     @patch("src.highlight_detector.extract_frames")
     def test_progress_callback_called(self, mock_extract: MagicMock) -> None:
@@ -198,7 +410,11 @@ class TestDetectFlow:
         analyzer = MagicMock()
         analyzer.analyze_frame_from_memory_with_prompt.return_value = {
             "scene": "lobby",
-            "intensity": 2,
+            "kills": 1,
+            "assists": 1,
+            "score_gain": 1,
+            "clutch": 1,
+            "special": 1,
             "reason": "lobby screen",
         }
 
@@ -207,7 +423,7 @@ class TestDetectFlow:
         def on_progress(phase: int, frames_done: int, frames_total: int) -> None:
             progress_calls.append((phase, frames_done, frames_total))
 
-        detector = HighlightDetector(analyzer=analyzer, stage1_interval=30, threshold=5)
+        detector = HighlightDetector(analyzer=analyzer, stage1_interval=30, threshold=100)
         detector.detect("/fake/video.mp4", progress_callback=on_progress)
 
         # Only stage 1 runs (no candidates for stage 2)
@@ -232,9 +448,32 @@ class TestDetectFlow:
 
             if prompt == STAGE1_PROMPT:
                 if call_count[0] == 2:
-                    return {"scene": "battle", "intensity": 7, "reason": "intense fight"}
-                return {"scene": "battle", "intensity": 3, "reason": "calm"}
-            return {"intensity": 7, "description": "kills happening"}
+                    return {
+                        "scene": "battle",
+                        "kills": 5,
+                        "assists": 3,
+                        "score_gain": 2,
+                        "clutch": 2,
+                        "special": 2,
+                        "reason": "intense fight",
+                    }
+                return {
+                    "scene": "battle",
+                    "kills": 1,
+                    "assists": 1,
+                    "score_gain": 1,
+                    "clutch": 1,
+                    "special": 1,
+                    "reason": "calm",
+                }
+            return {
+                "kills": 5,
+                "assists": 3,
+                "score_gain": 2,
+                "clutch": 2,
+                "special": 2,
+                "description": "kills happening",
+            }
 
         analyzer = MagicMock()
         analyzer.analyze_frame_from_memory_with_prompt.side_effect = mock_analyze
@@ -245,7 +484,7 @@ class TestDetectFlow:
             progress_calls.append((phase, frames_done, frames_total))
 
         detector = HighlightDetector(
-            analyzer=analyzer, stage1_interval=30, stage2_interval=5, threshold=5
+            analyzer=analyzer, stage1_interval=30, stage2_interval=3, threshold=100
         )
         detector.detect("/fake/video.mp4", progress_callback=on_progress)
 
@@ -257,19 +496,42 @@ class TestDetectFlow:
         assert stage2_calls[-1][1] == stage2_calls[-1][2]
 
     @patch("src.highlight_detector.extract_frames")
-    def test_battle_below_threshold_not_candidate(self, mock_extract: MagicMock) -> None:
-        mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 2
+    def test_battle_with_low_score_not_highlighted(self, mock_extract: MagicMock) -> None:
+        """Battle frames with all-1 scores still become candidates but don't pass threshold."""
+        stage1_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 2
+        stage2_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
+
+        mock_extract.side_effect = [stage1_frames, stage2_frames]
+
+        def mock_analyze(frame, prompt, timestamp):
+            from src.battle_analyzer import STAGE1_PROMPT
+
+            if prompt == STAGE1_PROMPT:
+                return {
+                    "scene": "battle",
+                    "kills": 1,
+                    "assists": 1,
+                    "score_gain": 1,
+                    "clutch": 1,
+                    "special": 1,
+                    "reason": "low action",
+                }
+            return {
+                "kills": 1,
+                "assists": 1,
+                "score_gain": 1,
+                "clutch": 1,
+                "special": 1,
+                "description": "nothing happening",
+            }
 
         analyzer = MagicMock()
-        analyzer.analyze_frame_from_memory_with_prompt.return_value = {
-            "scene": "battle",
-            "intensity": 3,
-            "reason": "low action",
-        }
+        analyzer.analyze_frame_from_memory_with_prompt.side_effect = mock_analyze
 
-        detector = HighlightDetector(analyzer=analyzer, stage1_interval=30, threshold=5)
+        detector = HighlightDetector(analyzer=analyzer, stage1_interval=30, threshold=100)
         segments = detector.detect("/fake/video.mp4")
 
+        # All battle frames are candidates (score=1), but stage2 score=1 < threshold=100
         assert segments == []
         assert detector.stage1_summary["battle_frames"] == 2
-        assert detector.stage1_summary["candidate_frames"] == 0
+        assert detector.stage1_summary["candidate_frames"] == 2

@@ -28,9 +28,9 @@ class HighlightRequest(BaseModel):
     start: float | None = Field(default=None, description="Start time in seconds")
     end: float | None = Field(default=None, description="End time in seconds")
     stage1_interval: float = Field(default=30.0, description="Stage 1 scan interval (seconds)")
-    stage2_interval: float = Field(default=5.0, description="Stage 2 scan interval (seconds)")
-    threshold: int = Field(default=5, description="Intensity threshold (1-10)")
-    max_highlights: int = Field(default=3, description="Max highlight regions")
+    stage2_interval: float = Field(default=3.0, description="Stage 2 scan interval (seconds)")
+    threshold: int = Field(default=100, description="Score threshold (product of 5 factors)")
+    max_highlights: int = Field(default=4, description="Max highlight regions")
     model: str | None = Field(default=None, description="Claude model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
 
