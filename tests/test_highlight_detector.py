@@ -5,11 +5,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from src.highlight_detector import (
-    MAX_CLIP_SECONDS,
     HighlightDetector,
     HighlightSegment,
-    _cap_segment_duration,
     _compute_score,
+    _ScoredFrame,
 )
 
 
@@ -40,47 +39,24 @@ class TestComputeScore:
         assert _compute_score(result) == 10
 
     def test_is_dead_halves_score(self) -> None:
-        result = {"kills": 5, "assists": 2, "score_gain": 3, "special": 4, "is_dead": True}
+        result = {
+            "kills": 5,
+            "assists": 2,
+            "score_gain": 3,
+            "special": 4,
+            "is_dead": True,
+        }
         assert _compute_score(result) == (5 * 2 * 3 * 4) // 2
 
     def test_is_dead_false_no_penalty(self) -> None:
-        result = {"kills": 5, "assists": 2, "score_gain": 3, "special": 4, "is_dead": False}
+        result = {
+            "kills": 5,
+            "assists": 2,
+            "score_gain": 3,
+            "special": 4,
+            "is_dead": False,
+        }
         assert _compute_score(result) == 5 * 2 * 3 * 4
-
-
-class TestCapSegmentDuration:
-    """Tests for _cap_segment_duration helper."""
-
-    def test_short_segment_unchanged(self) -> None:
-        seg = HighlightSegment(
-            start_seconds=10.0, end_seconds=20.0, peak_intensity=100, description="x"
-        )
-        result = _cap_segment_duration(seg)
-        assert result.start_seconds == 10.0
-        assert result.end_seconds == 20.0
-
-    def test_long_segment_capped(self) -> None:
-        seg = HighlightSegment(
-            start_seconds=0.0, end_seconds=30.0, peak_intensity=100, description="x"
-        )
-        result = _cap_segment_duration(seg)
-        assert result.end_seconds - result.start_seconds == MAX_CLIP_SECONDS
-
-    def test_cap_centers_on_midpoint(self) -> None:
-        seg = HighlightSegment(
-            start_seconds=10.0, end_seconds=40.0, peak_intensity=100, description="x"
-        )
-        result = _cap_segment_duration(seg)
-        center = (10.0 + 40.0) / 2
-        assert result.start_seconds == center - MAX_CLIP_SECONDS / 2
-        assert result.end_seconds == center + MAX_CLIP_SECONDS / 2
-
-    def test_cap_does_not_go_below_zero(self) -> None:
-        seg = HighlightSegment(
-            start_seconds=0.0, end_seconds=20.0, peak_intensity=100, description="x"
-        )
-        result = _cap_segment_duration(seg)
-        assert result.start_seconds >= 0
 
 
 class TestHighlightSegment:
@@ -88,7 +64,10 @@ class TestHighlightSegment:
 
     def test_creation(self) -> None:
         seg = HighlightSegment(
-            start_seconds=10.0, end_seconds=25.0, peak_intensity=800, description="test"
+            start_seconds=10.0,
+            end_seconds=25.0,
+            peak_intensity=800,
+            description="test",
         )
         assert seg.start_seconds == 10.0
         assert seg.end_seconds == 25.0
@@ -112,166 +91,134 @@ class TestHighlightDetectorInit:
         assert detector.threshold == 200
 
 
-class TestMergeSegments:
-    """Tests for segment merging logic."""
+class TestScoreFrames:
+    """Tests for _score_frames."""
 
-    def test_empty_results(self) -> None:
+    def test_empty(self) -> None:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer)
-        segments = detector._merge_segments([])
-        assert segments == []
+        assert detector._score_frames([]) == []
 
-    def test_single_high_score_frame(self) -> None:
+    def test_computes_scores(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer)
+        results = [
+            (0.0, {"kills": 5, "assists": 3, "score_gain": 3, "special": 3}),
+            (5.0, {"kills": 1, "assists": 1, "score_gain": 1, "special": 1}),
+        ]
+        scored = detector._score_frames(results)
+        assert len(scored) == 2
+        assert scored[0].score == 135
+        assert scored[1].score == 1
+
+    def test_non_dict_result_scores_zero(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer)
+        results = [(0.0, "parse error")]
+        scored = detector._score_frames(results)
+        assert scored[0].score == 0
+
+    def test_sorts_by_timestamp(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer)
+        results = [
+            (10.0, {"kills": 1, "assists": 1, "score_gain": 1, "special": 1}),
+            (0.0, {"kills": 2, "assists": 1, "score_gain": 1, "special": 1}),
+        ]
+        scored = detector._score_frames(results)
+        assert scored[0].timestamp == 0.0
+        assert scored[1].timestamp == 10.0
+
+
+class TestSelectWindows:
+    """Tests for sliding window selection."""
+
+    def test_empty(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer)
+        assert detector._select_windows([]) == []
+
+    def test_all_below_threshold(self) -> None:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
-        # score = 5*3*3*3 = 135, above threshold 100
-        results = [
-            (
-                10.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 3,
-                    "special": 3,
-                    "description": "action",
-                },
-            )
+        scored = [
+            _ScoredFrame(0.0, 1, ""),
+            _ScoredFrame(5.0, 1, ""),
+            _ScoredFrame(10.0, 1, ""),
         ]
-        segments = detector._merge_segments(results)
+        assert detector._select_windows(scored) == []
+
+    def test_single_window(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        scored = [
+            _ScoredFrame(0.0, 135, "a"),
+            _ScoredFrame(5.0, 216, "b"),
+            _ScoredFrame(10.0, 135, "c"),
+        ]
+        segments = detector._select_windows(scored)
         assert len(segments) == 1
-        assert segments[0].start_seconds == 10.0
+        assert segments[0].start_seconds == 0.0
         assert segments[0].end_seconds == 15.0
-        assert segments[0].peak_intensity == 135
+        assert segments[0].peak_intensity == 135 + 216 + 135
 
-    def test_consecutive_frames_merge(self) -> None:
+    def test_best_window_selected_by_sum(self) -> None:
+        """Window with highest sum of scores is preferred over peak."""
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
-        results = [
-            (
-                10.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 3,
-                    "special": 3,
-                    "description": "start",
-                },
-            ),
-            (
-                15.0,
-                {
-                    "kills": 8,
-                    "assists": 3,
-                    "score_gain": 3,
-                    "special": 3,
-                    "description": "peak",
-                },
-            ),
-            (
-                20.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 3,
-                    "special": 3,
-                    "description": "end",
-                },
-            ),
+        scored = [
+            _ScoredFrame(0.0, 500, "spike"),
+            _ScoredFrame(5.0, 1, ""),
+            _ScoredFrame(10.0, 1, ""),
+            _ScoredFrame(15.0, 200, "a"),
+            _ScoredFrame(20.0, 200, "b"),
+            _ScoredFrame(25.0, 200, "c"),
         ]
-        segments = detector._merge_segments(results)
+        segments = detector._select_windows(scored)
+        assert len(segments) == 2
+        sums = {s.start_seconds: s.peak_intensity for s in segments}
+        assert sums[15.0] > sums[0.0]
+
+    def test_non_overlapping(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        scored = [
+            _ScoredFrame(0.0, 200, "a"),
+            _ScoredFrame(5.0, 200, "b"),
+            _ScoredFrame(10.0, 200, "c"),
+            _ScoredFrame(15.0, 1, ""),
+            _ScoredFrame(20.0, 1, ""),
+            _ScoredFrame(25.0, 1, ""),
+            _ScoredFrame(30.0, 150, "d"),
+            _ScoredFrame(35.0, 150, "e"),
+            _ScoredFrame(40.0, 150, "f"),
+        ]
+        segments = detector._select_windows(scored)
+        assert len(segments) == 2
+        assert segments[0].start_seconds == 0.0
+        assert segments[1].start_seconds == 30.0
+
+    def test_single_high_frame_fallback(self) -> None:
+        """When no full window has a high-score frame, single frames work."""
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        scored = [_ScoredFrame(10.0, 200, "action")]
+        segments = detector._select_windows(scored)
         assert len(segments) == 1
         assert segments[0].start_seconds == 10.0
-        assert segments[0].end_seconds == 25.0
-        assert segments[0].peak_intensity == 8 * 3 * 3 * 3
 
-    def test_low_score_splits_segments(self) -> None:
+    def test_descriptions_summarized(self) -> None:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
-        results = [
-            (
-                10.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 3,
-                    "special": 3,
-                    "description": "first",
-                },
-            ),
-            (
-                15.0,
-                {
-                    "kills": 1,
-                    "assists": 1,
-                    "score_gain": 1,
-                    "special": 1,
-                    "description": "low",
-                },
-            ),
-            (
-                20.0,
-                {
-                    "kills": 1,
-                    "assists": 1,
-                    "score_gain": 1,
-                    "special": 1,
-                    "description": "low",
-                },
-            ),
-            (
-                25.0,
-                {
-                    "kills": 1,
-                    "assists": 1,
-                    "score_gain": 1,
-                    "special": 1,
-                    "description": "low",
-                },
-            ),
-            (
-                30.0,
-                {
-                    "kills": 8,
-                    "assists": 3,
-                    "score_gain": 3,
-                    "special": 3,
-                    "description": "second",
-                },
-            ),
+        scored = [
+            _ScoredFrame(0.0, 200, "first"),
+            _ScoredFrame(5.0, 200, "second"),
+            _ScoredFrame(10.0, 200, "third"),
         ]
-        segments = detector._merge_segments(results)
-        assert len(segments) == 2
-
-    def test_non_dict_result_treated_as_zero(self) -> None:
-        analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
-        results = [
-            (
-                10.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 3,
-                    "special": 3,
-                    "description": "action",
-                },
-            ),
-            (15.0, "parse error"),
-            (20.0, "parse error"),
-            (25.0, "parse error"),
-            (
-                30.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 3,
-                    "special": 3,
-                    "description": "more action",
-                },
-            ),
-        ]
-        segments = detector._merge_segments(results)
-        assert len(segments) == 2
+        segments = detector._select_windows(scored)
+        assert "first" in segments[0].description
+        assert "second" in segments[0].description
+        assert "third" in segments[0].description
 
 
 class TestDetectFlow:
@@ -303,7 +250,7 @@ class TestDetectFlow:
         mock_extract.return_value = frames
 
         def mock_analyze(frame, prompt, timestamp):
-            if timestamp == "00m05s":
+            if timestamp in ("00m05s", "00m10s", "00m15s"):
                 return {
                     "kills": 5,
                     "assists": 3,
