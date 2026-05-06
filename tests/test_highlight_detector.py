@@ -143,6 +143,27 @@ class TestScoreFrames:
         # second frame: (80-60)/10+1=3, score_gain=3 -> 5*3*3*3=135
         assert scored[1].score == 135
 
+    def test_score_gain_uses_window_average(self) -> None:
+        """score_gain の基準値は直近40秒分の平均カウント."""
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        # 9 frames = 0s~40s. Window=40s/5s=8 frames max.
+        results = [
+            (0.0, {"kills": 1, "assists": 1, "special": 1, "my_team_count": 100}),
+            (5.0, {"kills": 1, "assists": 1, "special": 1, "my_team_count": 95}),
+            (10.0, {"kills": 1, "assists": 1, "special": 1, "my_team_count": 90}),
+            (15.0, {"kills": 1, "assists": 1, "special": 1, "my_team_count": 85}),
+            (20.0, {"kills": 1, "assists": 1, "special": 1, "my_team_count": 80}),
+            (25.0, {"kills": 1, "assists": 1, "special": 1, "my_team_count": 75}),
+            (30.0, {"kills": 1, "assists": 1, "special": 1, "my_team_count": 70}),
+            (35.0, {"kills": 1, "assists": 1, "special": 1, "my_team_count": 65}),
+            (40.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 50}),
+        ]
+        scored = detector._score_frames(results)
+        # At 40s: window has frames 0-35s (8 frames): 100,95,90,85,80,75,70,65
+        # avg = 82.5 -> int = 82. gain = (82-50)/10+1 = 4.2 -> int = 4
+        assert scored[8].raw["score_gain"] == 4
+
     def test_non_dict_result_scores_zero(self) -> None:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer)
