@@ -9,6 +9,7 @@ from src.highlight_detector import (
     HighlightSegment,
     _calc_score_gain,
     _compute_score,
+    _normalize_counts,
     _ScoredFrame,
 )
 
@@ -133,14 +134,14 @@ class TestScoreFrames:
         detector = HighlightDetector(analyzer=analyzer)
         results = [
             (0.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 80}),
-            (5.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 50}),
+            (5.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 60}),
         ]
         scored = detector._score_frames(results)
         assert len(scored) == 2
         # first frame: prev_count=None, score_gain=1 -> 5*3*1*3=45
         assert scored[0].score == 45
-        # second frame: (80-50)/10+1=4, score_gain=4 -> 5*3*4*3=180
-        assert scored[1].score == 180
+        # second frame: (80-60)/10+1=3, score_gain=3 -> 5*3*3*3=135
+        assert scored[1].score == 135
 
     def test_non_dict_result_scores_zero(self) -> None:
         analyzer = MagicMock()
@@ -282,11 +283,11 @@ class TestDetectFlow:
 
         count_map = {
             "00m00s": 100,
-            "00m05s": 70,
-            "00m10s": 40,
-            "00m15s": 10,
-            "00m20s": 10,
-            "00m25s": 10,
+            "00m05s": 80,
+            "00m10s": 60,
+            "00m15s": 40,
+            "00m20s": 40,
+            "00m25s": 40,
         }
 
         def mock_analyze(frame, prompt, timestamp):
@@ -395,3 +396,95 @@ class TestDetectFlow:
 
         assert segments == []
         assert detector.scan_summary["total_frames"] == 4
+
+
+class TestNormalizeCounts:
+    """Tests for _normalize_counts."""
+
+    def test_null_stays_null_when_no_previous(self) -> None:
+        results = [(0.0, {"my_team_count": None, "enemy_team_count": None})]
+        _normalize_counts(results)
+        assert results[0][1]["my_team_count"] is None
+        assert results[0][1]["my_team_count_raw"] is None
+
+    def test_null_filled_with_previous(self) -> None:
+        results = [
+            (0.0, {"my_team_count": 80, "enemy_team_count": 90}),
+            (5.0, {"my_team_count": None, "enemy_team_count": None}),
+        ]
+        _normalize_counts(results)
+        assert results[1][1]["my_team_count"] == 80
+        assert results[1][1]["enemy_team_count"] == 90
+        assert results[1][1]["my_team_count_raw"] is None
+
+    def test_first_value_very_low_normalized_to_100(self) -> None:
+        results = [(0.0, {"my_team_count": 10, "enemy_team_count": 5})]
+        _normalize_counts(results)
+        assert results[0][1]["my_team_count"] == 100
+        assert results[0][1]["my_team_count_raw"] == 10
+        assert results[0][1]["enemy_team_count"] == 100
+        assert results[0][1]["enemy_team_count_raw"] == 5
+
+    def test_first_value_moderate_kept(self) -> None:
+        results = [(0.0, {"my_team_count": 80, "enemy_team_count": 70})]
+        _normalize_counts(results)
+        assert results[0][1]["my_team_count"] == 80
+        assert results[0][1]["enemy_team_count"] == 70
+
+    def test_increasing_value_treated_as_anomaly(self) -> None:
+        results = [
+            (0.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (5.0, {"my_team_count": 90, "enemy_team_count": 85}),
+        ]
+        _normalize_counts(results)
+        assert results[1][1]["my_team_count"] == 80
+        assert results[1][1]["enemy_team_count"] == 80
+        assert results[1][1]["my_team_count_raw"] == 90
+
+    def test_large_decrease_treated_as_anomaly(self) -> None:
+        results = [
+            (0.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (5.0, {"my_team_count": 40, "enemy_team_count": 30}),
+        ]
+        _normalize_counts(results)
+        assert results[1][1]["my_team_count"] == 80
+        assert results[1][1]["enemy_team_count"] == 80
+
+    def test_normal_decrease_accepted(self) -> None:
+        results = [
+            (0.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (5.0, {"my_team_count": 75, "enemy_team_count": 72}),
+        ]
+        _normalize_counts(results)
+        assert results[1][1]["my_team_count"] == 75
+        assert results[1][1]["enemy_team_count"] == 72
+
+    def test_boundary_decrease_of_30_accepted(self) -> None:
+        results = [
+            (0.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (5.0, {"my_team_count": 50, "enemy_team_count": 50}),
+        ]
+        _normalize_counts(results)
+        assert results[1][1]["my_team_count"] == 50
+        assert results[1][1]["enemy_team_count"] == 50
+
+    def test_raw_values_preserved(self) -> None:
+        results = [
+            (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (5.0, {"my_team_count": 95, "enemy_team_count": 92}),
+            (10.0, {"my_team_count": 120, "enemy_team_count": 88}),
+        ]
+        _normalize_counts(results)
+        assert results[0][1]["my_team_count_raw"] == 100
+        assert results[1][1]["my_team_count_raw"] == 95
+        assert results[2][1]["my_team_count_raw"] == 120
+        assert results[2][1]["my_team_count"] == 95
+
+    def test_non_dict_results_skipped(self) -> None:
+        results = [
+            (0.0, "parse error"),
+            (5.0, {"my_team_count": 80, "enemy_team_count": 80}),
+        ]
+        _normalize_counts(results)
+        assert results[0][1] == "parse error"
+        assert results[1][1]["my_team_count"] == 80
