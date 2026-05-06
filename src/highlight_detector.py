@@ -28,26 +28,24 @@ def _calc_score_gain(prev_count: int | None, cur_count: int | None) -> int:
     return max(1, min(10, int(gain)))
 
 
-ANOMALY_SIGMA = 2
-ANOMALY_MIN_HISTORY = 3
-ANOMALY_FALLBACK_THRESHOLD = 30
 FIRST_VALUE_FLOOR = 50
+IQR_MULTIPLIER = 1.5
+CONSECUTIVE_RUN_MIN = 2
 
 
-def _is_anomalous_drop(delta: float, history: list[float]) -> bool:
-    """直近の減少幅履歴に対して、delta が統計的に異常かを判定する.
+def _compute_iqr_fence(deltas: list[float]) -> float:
+    """減少幅リストの IQR 上限フェンスを算出する.
 
-    履歴が ANOMALY_MIN_HISTORY 未満の場合は固定閾値にフォールバック。
-    十分な履歴がある場合は mean + ANOMALY_SIGMA * σ を超えたら異常。
+    Q3 + 1.5 * IQR を返す。データが不足の場合は inf を返す（全て正常扱い）。
     """
-    if len(history) < ANOMALY_MIN_HISTORY:
-        return delta > ANOMALY_FALLBACK_THRESHOLD
-
-    mean = sum(history) / len(history)
-    variance = sum((x - mean) ** 2 for x in history) / len(history)
-    sigma = math.sqrt(variance)
-    threshold = mean + ANOMALY_SIGMA * sigma
-    return delta > threshold
+    if len(deltas) < 4:
+        return math.inf
+    sorted_d = sorted(deltas)
+    n = len(sorted_d)
+    q1 = sorted_d[n // 4]
+    q3 = sorted_d[(3 * n) // 4]
+    iqr = q3 - q1
+    return q3 + IQR_MULTIPLIER * iqr
 
 
 def _normalize_counts(
@@ -55,26 +53,75 @@ def _normalize_counts(
 ) -> None:
     """ゲームカウントを正規化し、raw値と正規化値の両方をdictに格納する.
 
-    正規化ルール:
-    1. 最初の非null値が FIRST_VALUE_FLOOR 未満なら100に正規化
-    2. カウントは減少のみ（増加は異常値として直前値で置換）
-    3. 減少幅が直近の減少幅の mean + 2σ を超えたら異常値として直前値で置換
-    4. nullは直前の正規化済み値で埋める（直前がなければnullのまま）
+    2パスアプローチ:
+    Pass 1: raw値から隣接フレーム間の減少幅を全て収集し、IQR で外れ値閾値を算出
+    Pass 2: 閾値を超える減少でも連続(2フレーム以上)している場合は正常と判定
+            孤立した単発の急落のみ異常値として直前値で置換
     """
     for field in ("my_team_count", "enemy_team_count"):
         raw_field = f"{field}_raw"
-        prev_normalized: int | None = None
-        drop_history: list[float] = []
 
-        for _ts, result in results:
+        # --- Pass 1: raw値を収集し、隣接間の減少幅からIQRフェンスを算出 ---
+        raw_values: list[tuple[int, int]] = []  # (index, value)
+        dict_indices: list[int] = []
+        for i, (_ts, result) in enumerate(results):
             if not isinstance(result, dict):
                 continue
+            dict_indices.append(i)
+            val = result.get(field)
+            if val is not None:
+                raw_values.append((i, val))
 
-            raw_value = result.get(field)
-            result[raw_field] = raw_value
+        deltas: list[float] = []
+        for j in range(1, len(raw_values)):
+            prev_val = raw_values[j - 1][1]
+            cur_val = raw_values[j][1]
+            if cur_val < prev_val:
+                deltas.append(prev_val - cur_val)
+
+        fence = _compute_iqr_fence(deltas)
+
+        # --- Pass 2: 正規化適用 ---
+        # まず各フレームの「フェンス超え減少」フラグを計算
+        raw_sequence: list[tuple[int, int | None]] = []
+        for i in dict_indices:
+            val = results[i][1].get(field)  # type: ignore[union-attr]
+            raw_sequence.append((i, val))
+
+        # 隣接減少幅がフェンスを超えるインデックスを特定
+        large_drop_indices: set[int] = set()
+        prev_val_for_flag: int | None = None
+        for seq_idx, (_, val) in enumerate(raw_sequence):
+            if val is None:
+                continue
+            if prev_val_for_flag is not None and val < prev_val_for_flag:
+                delta = prev_val_for_flag - val
+                if delta > fence:
+                    large_drop_indices.add(seq_idx)
+            prev_val_for_flag = val
+
+        # 連続するフェンス超えを正常と判定するためのセット構築
+        sustained_indices: set[int] = set()
+        sorted_large = sorted(large_drop_indices)
+        run_start = 0
+        for k in range(1, len(sorted_large) + 1):
+            if k == len(sorted_large) or sorted_large[k] - sorted_large[k - 1] > 1:
+                run_length = k - run_start
+                if run_length >= CONSECUTIVE_RUN_MIN:
+                    for m in range(run_start, k):
+                        sustained_indices.add(sorted_large[m])
+                run_start = k
+
+        # 最終的な正規化
+        prev_normalized: int | None = None
+        prev_raw: int | None = None
+        for seq_idx, (i, _) in enumerate(raw_sequence):
+            result = results[i][1]
+            raw_value = result.get(field)  # type: ignore[union-attr]
+            result[raw_field] = raw_value  # type: ignore[union-attr]
 
             if raw_value is None:
-                result[field] = prev_normalized
+                result[field] = prev_normalized  # type: ignore[union-attr]
                 continue
 
             if prev_normalized is None:
@@ -82,16 +129,14 @@ def _normalize_counts(
             else:
                 if raw_value > prev_normalized:
                     normalized = prev_normalized
+                elif seq_idx in large_drop_indices and seq_idx not in sustained_indices:
+                    normalized = prev_normalized
                 else:
-                    delta = prev_normalized - raw_value
-                    if _is_anomalous_drop(delta, drop_history):
-                        normalized = prev_normalized
-                    else:
-                        normalized = raw_value
-                        drop_history.append(delta)
+                    normalized = raw_value
 
-            result[field] = normalized
+            result[field] = normalized  # type: ignore[union-attr]
             prev_normalized = normalized
+            prev_raw = raw_value
 
 
 def _compute_score(result: dict) -> int:

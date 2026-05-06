@@ -1,5 +1,6 @@
 """Tests for the highlight detection module."""
 
+import math
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -8,8 +9,8 @@ from src.highlight_detector import (
     HighlightDetector,
     HighlightSegment,
     _calc_score_gain,
+    _compute_iqr_fence,
     _compute_score,
-    _is_anomalous_drop,
     _normalize_counts,
     _ScoredFrame,
 )
@@ -422,36 +423,26 @@ class TestDetectFlow:
         assert detector.scan_summary["total_frames"] == 4
 
 
-class TestIsAnomalousDrop:
-    """Tests for _is_anomalous_drop statistical detection."""
+class TestComputeIqrFence:
+    """Tests for _compute_iqr_fence."""
 
-    def test_insufficient_history_uses_fallback(self) -> None:
-        assert _is_anomalous_drop(31, [5, 5]) is True
-        assert _is_anomalous_drop(30, [5, 5]) is False
+    def test_insufficient_data_returns_inf(self) -> None:
+        assert _compute_iqr_fence([1, 2, 3]) == math.inf
 
-    def test_within_2sigma_is_normal(self) -> None:
-        # history: [5, 5, 5, 5] -> mean=5, σ=0, threshold=5
-        # delta=5 is not anomalous
-        assert _is_anomalous_drop(5, [5, 5, 5, 5]) is False
+    def test_uniform_data(self) -> None:
+        # All same -> Q1=Q3=5, IQR=0, fence=5
+        assert _compute_iqr_fence([5, 5, 5, 5]) == 5.0
 
-    def test_beyond_2sigma_is_anomalous(self) -> None:
-        # history: [3, 5, 3, 5] -> mean=4, σ=1, threshold=4+2*1=6
-        # delta=7 is anomalous
-        assert _is_anomalous_drop(7, [3, 5, 3, 5]) is True
+    def test_spread_data(self) -> None:
+        # [2, 4, 6, 8] sorted. n=4, Q1=sorted[1]=4, Q3=sorted[3]=8
+        # IQR=4, fence=8+1.5*4=14
+        assert _compute_iqr_fence([2, 4, 6, 8]) == 14.0
 
-    def test_exactly_at_threshold_is_not_anomalous(self) -> None:
-        # history: [3, 5, 3, 5] -> mean=4, σ=1, threshold=6
-        # delta=6 is not anomalous (> not >=)
-        assert _is_anomalous_drop(6, [3, 5, 3, 5]) is False
-
-    def test_zero_variance_rejects_larger(self) -> None:
-        # history: [5, 5, 5] -> mean=5, σ=0, threshold=5
-        assert _is_anomalous_drop(6, [5, 5, 5]) is True
-
-    def test_high_variance_accepts_wider_range(self) -> None:
-        # history: [2, 8, 2, 8] -> mean=5, σ=3, threshold=5+6=11
-        assert _is_anomalous_drop(10, [2, 8, 2, 8]) is False
-        assert _is_anomalous_drop(12, [2, 8, 2, 8]) is True
+    def test_larger_dataset(self) -> None:
+        # [1,2,3,4,5,6,7,8] n=8, Q1=sorted[2]=3, Q3=sorted[6]=7
+        # IQR=4, fence=7+6=13
+        data = [1, 2, 3, 4, 5, 6, 7, 8]
+        assert _compute_iqr_fence(data) == 13.0
 
 
 class TestNormalizeCounts:
@@ -497,19 +488,24 @@ class TestNormalizeCounts:
         assert results[1][1]["enemy_team_count"] == 80
         assert results[1][1]["my_team_count_raw"] == 90
 
-    def test_spike_detected_after_stable_history(self) -> None:
-        """安定した減少傾向のあと急落すると異常値として検出される."""
+    def test_isolated_spike_detected(self) -> None:
+        """安定した推移の中で孤立した急落は異常値として検出される."""
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
             (5.0, {"my_team_count": 95, "enemy_team_count": 95}),
             (10.0, {"my_team_count": 90, "enemy_team_count": 90}),
             (15.0, {"my_team_count": 85, "enemy_team_count": 85}),
-            # 安定して5ずつ減少した後の急落 → mean=5, σ=0, threshold=5
-            (20.0, {"my_team_count": 50, "enemy_team_count": 50}),
+            (20.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (25.0, {"my_team_count": 75, "enemy_team_count": 75}),
+            (30.0, {"my_team_count": 70, "enemy_team_count": 70}),
+            # 孤立した急落（単発）: deltas=[5,5,5,5,5,5] → IQR=0, fence=5
+            # delta=40 > 5 → フェンス超え & 非連続 → 異常値
+            (35.0, {"my_team_count": 30, "enemy_team_count": 30}),
+            (40.0, {"my_team_count": 65, "enemy_team_count": 65}),
         ]
         _normalize_counts(results)
-        assert results[4][1]["my_team_count"] == 85
-        assert results[4][1]["my_team_count_raw"] == 50
+        assert results[7][1]["my_team_count"] == 70
+        assert results[7][1]["my_team_count_raw"] == 30
 
     def test_consistent_decrease_accepted(self) -> None:
         """一貫した減少ペースなら正常."""
@@ -523,6 +519,24 @@ class TestNormalizeCounts:
         _normalize_counts(results)
         assert results[4][1]["my_team_count"] == 60
         assert results[4][1]["enemy_team_count"] == 60
+
+    def test_knockout_push_accepted(self) -> None:
+        """連続した大幅減少（ノックアウト推進）は正常と判定される."""
+        results = [
+            (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (5.0, {"my_team_count": 95, "enemy_team_count": 95}),
+            (10.0, {"my_team_count": 90, "enemy_team_count": 90}),
+            (15.0, {"my_team_count": 85, "enemy_team_count": 85}),
+            # ノックアウト推進: 連続して大幅な減少
+            (20.0, {"my_team_count": 55, "enemy_team_count": 55}),
+            (25.0, {"my_team_count": 25, "enemy_team_count": 25}),
+            (30.0, {"my_team_count": 0, "enemy_team_count": 0}),
+        ]
+        _normalize_counts(results)
+        # 連続(3フレーム)しているため正常扱い
+        assert results[4][1]["my_team_count"] == 55
+        assert results[5][1]["my_team_count"] == 25
+        assert results[6][1]["my_team_count"] == 0
 
     def test_raw_values_preserved(self) -> None:
         results = [
@@ -545,28 +559,31 @@ class TestNormalizeCounts:
         assert results[0][1] == "parse error"
         assert results[1][1]["my_team_count"] == 80
 
-    def test_fallback_threshold_with_few_data_points(self) -> None:
-        """履歴が少ない場合は固定閾値(30)にフォールバック."""
+    def test_few_data_points_all_accepted(self) -> None:
+        """データが少ない場合はIQR算出不能のため全て正常扱い."""
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
             (5.0, {"my_team_count": 60, "enemy_team_count": 60}),
         ]
         _normalize_counts(results)
-        # delta=40 > fallback 30 → anomaly
-        assert results[1][1]["my_team_count"] == 100
+        # fence=inf → 全減少が正常
+        assert results[1][1]["my_team_count"] == 60
 
-    def test_anomaly_excluded_from_history(self) -> None:
-        """異常値の減少幅は履歴に追加されない."""
+    def test_isolated_anomaly_does_not_affect_neighbors(self) -> None:
+        """孤立した異常値は弾かれ、隣接する正常値はそのまま."""
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
             (5.0, {"my_team_count": 95, "enemy_team_count": 95}),
             (10.0, {"my_team_count": 90, "enemy_team_count": 90}),
             (15.0, {"my_team_count": 85, "enemy_team_count": 85}),
-            # 異常値: 35ポイント急落(mean=5, σ=0 → threshold=5 → anomalous)
-            (20.0, {"my_team_count": 50, "enemy_team_count": 50}),
-            # 正常な5ポイント減少 → 異常値が履歴に混入していなければ通る
-            (25.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (20.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (25.0, {"my_team_count": 75, "enemy_team_count": 75}),
+            (30.0, {"my_team_count": 70, "enemy_team_count": 70}),
+            # 孤立した急落
+            (35.0, {"my_team_count": 30, "enemy_team_count": 30}),
+            # 正常な減少に戻る
+            (40.0, {"my_team_count": 65, "enemy_team_count": 65}),
         ]
         _normalize_counts(results)
-        assert results[4][1]["my_team_count"] == 85
-        assert results[5][1]["my_team_count"] == 80
+        assert results[7][1]["my_team_count"] == 70
+        assert results[8][1]["my_team_count"] == 65
