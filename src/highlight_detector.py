@@ -17,6 +17,14 @@ MAX_CLIP_SECONDS = 15
 MAX_TOTAL_SECONDS = 60
 
 
+def _calc_score_gain(prev_count: int | None, cur_count: int | None) -> int:
+    """前フレームとのゲームカウント差分から score_gain を計算."""
+    if prev_count is None or cur_count is None:
+        return 1
+    gain = (prev_count - cur_count) / 10 + 1
+    return max(1, min(10, int(gain)))
+
+
 def _compute_score(result: dict) -> int:
     """4項目の掛け算でスコアを計算。デス中は半減."""
     kills = max(1, min(10, result.get("kills", 1)))
@@ -160,14 +168,19 @@ class HighlightDetector:
     def _score_frames(self, results: list[tuple[float, dict | str]]) -> list[_ScoredFrame]:
         sorted_results = sorted(results, key=lambda x: x[0])
         scored: list[_ScoredFrame] = []
+        prev_count: int | None = None
         for timestamp, result in sorted_results:
             score = 0
             description = ""
             raw: dict = {}
             if isinstance(result, dict):
-                score = _compute_score(result)
-                description = result.get("description", "")
                 raw = result
+                cur_count = raw.get("my_team_count")
+                raw["score_gain"] = _calc_score_gain(prev_count, cur_count)
+                if cur_count is not None:
+                    prev_count = cur_count
+                score = _compute_score(raw)
+                description = raw.get("description", "")
             scored.append(_ScoredFrame(timestamp, score, description, raw))
         return scored
 
