@@ -475,17 +475,13 @@ class TestHighlightModeArgs:
         args = parse_args(["--input", "v.mp4", "--mode", "highlight"])
         assert args.mode == "highlight"
 
-    def test_stage1_interval_default(self) -> None:
+    def test_highlight_interval_default(self) -> None:
         args = parse_args(["--input", "v.mp4"])
-        assert args.stage1_interval == 30.0
-
-    def test_stage2_interval_default(self) -> None:
-        args = parse_args(["--input", "v.mp4"])
-        assert args.stage2_interval == 5.0
+        assert args.highlight_interval == 5.0
 
     def test_threshold_default(self) -> None:
         args = parse_args(["--input", "v.mp4"])
-        assert args.threshold == 5
+        assert args.threshold == 100
 
     def test_custom_highlight_args(self) -> None:
         args = parse_args(
@@ -494,17 +490,14 @@ class TestHighlightModeArgs:
                 "v.mp4",
                 "--mode",
                 "highlight",
-                "--stage1-interval",
-                "60",
-                "--stage2-interval",
+                "--highlight-interval",
                 "10",
                 "--threshold",
-                "7",
+                "200",
             ]
         )
-        assert args.stage1_interval == 60.0
-        assert args.stage2_interval == 10.0
-        assert args.threshold == 7
+        assert args.highlight_interval == 10.0
+        assert args.threshold == 200
 
 
 class TestHighlightFormatting:
@@ -519,7 +512,7 @@ class TestHighlightFormatting:
                 description="Multiple kills",
             )
         ]
-        summary = {"total_frames": 40, "battle_frames": 30, "candidate_frames": 8}
+        summary = {"total_frames": 40, "battle_frames": 30}
         args = parse_args(["--input", "gameplay.mp4", "--mode", "highlight"])
         output = format_highlight_json(highlights, summary, args, "llava-llama3")
         data = json.loads(output)
@@ -530,10 +523,10 @@ class TestHighlightFormatting:
         assert len(data["highlights"]) == 1
         assert data["highlights"][0]["start_seconds"] == 120.0
         assert data["highlights"][0]["peak_intensity"] == 8
-        assert data["stage1_summary"]["total_frames"] == 40
+        assert data["scan_summary"]["total_frames"] == 40
 
     def test_format_highlight_text_no_highlights(self) -> None:
-        summary = {"total_frames": 10, "battle_frames": 0, "candidate_frames": 0}
+        summary = {"total_frames": 10, "battle_frames": 0}
         output = format_highlight_text([], summary)
         assert "No highlights detected." in output
         assert "10 frames scanned" in output
@@ -547,7 +540,7 @@ class TestHighlightFormatting:
                 description="Team wipe",
             )
         ]
-        summary = {"total_frames": 20, "battle_frames": 15, "candidate_frames": 3}
+        summary = {"total_frames": 20, "battle_frames": 15}
         output = format_highlight_text(highlights, summary)
         assert "Highlight #1" in output
         assert "60s - 90s" in output
@@ -577,10 +570,9 @@ class TestHighlightModeRun:
                 description="Big play",
             )
         ]
-        mock_detector.stage1_summary = {
+        mock_detector.scan_summary = {
             "total_frames": 10,
             "battle_frames": 8,
-            "candidate_frames": 2,
         }
         mock_detector_cls.return_value = mock_detector
 

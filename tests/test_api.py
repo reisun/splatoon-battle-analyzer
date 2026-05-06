@@ -197,7 +197,7 @@ class TestGetJobStatus:
                     "description": "Intense battle",
                 }
             ],
-            "stage1_summary": {"total_frames": 10, "battle_frames": 5, "candidate_frames": 1},
+            "scan_summary": {"total_frames": 10, "battle_frames": 5, "candidate_frames": 1},
         }
         job_store.mark_completed(job.job_id, result)
 

@@ -11,7 +11,7 @@ class TestJobProgress:
     def test_defaults(self) -> None:
         p = JobProgress()
         assert p.phase == 0
-        assert p.phase_total == 2
+        assert p.phase_total == 1
         assert p.frames_done == 0
         assert p.frames_total == 0
 

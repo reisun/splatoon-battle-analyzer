@@ -17,7 +17,7 @@ class JobStatus(str, Enum):
 @dataclass
 class JobProgress:
     phase: int = 0
-    phase_total: int = 2
+    phase_total: int = 1
     frames_done: int = 0
     frames_total: int = 0
 
