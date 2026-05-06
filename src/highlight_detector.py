@@ -34,6 +34,23 @@ class _ScoredFrame:
     timestamp: float
     score: int
     description: str
+    raw: dict
+
+
+@dataclass
+class FrameAnalysis:
+    timestamp_seconds: float
+    score: int
+    kills: int
+    assists: int
+    score_gain: int
+    special: int
+    is_dead: bool
+    description: str
+    my_team_color: str
+    enemy_team_color: str
+    my_team_score: int | None
+    enemy_team_score: int | None
 
 
 @dataclass
@@ -57,6 +74,7 @@ class HighlightDetector:
         self.interval = interval
         self.threshold = threshold
         self.scan_summary: dict = {}
+        self.all_frames: list[FrameAnalysis] = []
 
     def detect(
         self,
@@ -110,6 +128,23 @@ class HighlightDetector:
         }
 
         scored = self._score_frames(results)
+        self.all_frames = [
+            FrameAnalysis(
+                timestamp_seconds=f.timestamp,
+                score=f.score,
+                kills=max(1, min(10, f.raw.get("kills", 1))),
+                assists=max(1, min(10, f.raw.get("assists", 1))),
+                score_gain=max(1, min(10, f.raw.get("score_gain", 1))),
+                special=max(1, min(10, f.raw.get("special", 1))),
+                is_dead=f.raw.get("is_dead", False),
+                description=f.raw.get("description", ""),
+                my_team_color=f.raw.get("my_team_color", ""),
+                enemy_team_color=f.raw.get("enemy_team_color", ""),
+                my_team_score=f.raw.get("my_team_score"),
+                enemy_team_score=f.raw.get("enemy_team_score"),
+            )
+            for f in scored
+        ]
         segments = self._select_windows(scored)
 
         remaining = MAX_TOTAL_SECONDS
@@ -122,23 +157,21 @@ class HighlightDetector:
 
         return budget_segments
 
-    def _score_frames(
-        self, results: list[tuple[float, dict | str]]
-    ) -> list[_ScoredFrame]:
+    def _score_frames(self, results: list[tuple[float, dict | str]]) -> list[_ScoredFrame]:
         sorted_results = sorted(results, key=lambda x: x[0])
         scored: list[_ScoredFrame] = []
         for timestamp, result in sorted_results:
             score = 0
             description = ""
+            raw: dict = {}
             if isinstance(result, dict):
                 score = _compute_score(result)
                 description = result.get("description", "")
-            scored.append(_ScoredFrame(timestamp, score, description))
+                raw = result
+            scored.append(_ScoredFrame(timestamp, score, description, raw))
         return scored
 
-    def _select_windows(
-        self, scored: list[_ScoredFrame]
-    ) -> list[HighlightSegment]:
+    def _select_windows(self, scored: list[_ScoredFrame]) -> list[HighlightSegment]:
         """Select best non-overlapping windows by sliding window score sum."""
         if not scored:
             return []
