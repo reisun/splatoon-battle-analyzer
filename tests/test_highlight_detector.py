@@ -142,9 +142,9 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
         scored = [
-            _ScoredFrame(0.0, 1, ""),
-            _ScoredFrame(5.0, 1, ""),
-            _ScoredFrame(10.0, 1, ""),
+            _ScoredFrame(0.0, 1, "", {}),
+            _ScoredFrame(5.0, 1, "", {}),
+            _ScoredFrame(10.0, 1, "", {}),
         ]
         assert detector._select_windows(scored) == []
 
@@ -152,9 +152,9 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
         scored = [
-            _ScoredFrame(0.0, 135, "a"),
-            _ScoredFrame(5.0, 216, "b"),
-            _ScoredFrame(10.0, 135, "c"),
+            _ScoredFrame(0.0, 135, "a", {}),
+            _ScoredFrame(5.0, 216, "b", {}),
+            _ScoredFrame(10.0, 135, "c", {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 1
@@ -167,12 +167,12 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
         scored = [
-            _ScoredFrame(0.0, 500, "spike"),
-            _ScoredFrame(5.0, 1, ""),
-            _ScoredFrame(10.0, 1, ""),
-            _ScoredFrame(15.0, 200, "a"),
-            _ScoredFrame(20.0, 200, "b"),
-            _ScoredFrame(25.0, 200, "c"),
+            _ScoredFrame(0.0, 500, "spike", {}),
+            _ScoredFrame(5.0, 1, "", {}),
+            _ScoredFrame(10.0, 1, "", {}),
+            _ScoredFrame(15.0, 200, "a", {}),
+            _ScoredFrame(20.0, 200, "b", {}),
+            _ScoredFrame(25.0, 200, "c", {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 2
@@ -183,15 +183,15 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
         scored = [
-            _ScoredFrame(0.0, 200, "a"),
-            _ScoredFrame(5.0, 200, "b"),
-            _ScoredFrame(10.0, 200, "c"),
-            _ScoredFrame(15.0, 1, ""),
-            _ScoredFrame(20.0, 1, ""),
-            _ScoredFrame(25.0, 1, ""),
-            _ScoredFrame(30.0, 150, "d"),
-            _ScoredFrame(35.0, 150, "e"),
-            _ScoredFrame(40.0, 150, "f"),
+            _ScoredFrame(0.0, 200, "a", {}),
+            _ScoredFrame(5.0, 200, "b", {}),
+            _ScoredFrame(10.0, 200, "c", {}),
+            _ScoredFrame(15.0, 1, "", {}),
+            _ScoredFrame(20.0, 1, "", {}),
+            _ScoredFrame(25.0, 1, "", {}),
+            _ScoredFrame(30.0, 150, "d", {}),
+            _ScoredFrame(35.0, 150, "e", {}),
+            _ScoredFrame(40.0, 150, "f", {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 2
@@ -202,7 +202,7 @@ class TestSelectWindows:
         """When no full window has a high-score frame, single frames work."""
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
-        scored = [_ScoredFrame(10.0, 200, "action")]
+        scored = [_ScoredFrame(10.0, 200, "action", {})]
         segments = detector._select_windows(scored)
         assert len(segments) == 1
         assert segments[0].start_seconds == 10.0
@@ -211,9 +211,9 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
         scored = [
-            _ScoredFrame(0.0, 200, "first"),
-            _ScoredFrame(5.0, 200, "second"),
-            _ScoredFrame(10.0, 200, "third"),
+            _ScoredFrame(0.0, 200, "first", {}),
+            _ScoredFrame(5.0, 200, "second", {}),
+            _ScoredFrame(10.0, 200, "third", {}),
         ]
         segments = detector._select_windows(scored)
         assert "first" in segments[0].description

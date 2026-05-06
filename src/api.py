@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
-from src.highlight_detector import HighlightDetector
+from src.highlight_detector import FrameAnalysis, HighlightDetector
 from src.job_store import JobStatus, JobStore
 
 logger = logging.getLogger(__name__)
@@ -39,10 +39,26 @@ class SegmentResult(BaseModel):
     description: str
 
 
+class FrameResult(BaseModel):
+    timestamp_seconds: float
+    score: int
+    kills: int
+    assists: int
+    score_gain: int
+    special: int
+    is_dead: bool
+    description: str
+    my_team_color: str
+    enemy_team_color: str
+    my_team_score: int | None
+    enemy_team_score: int | None
+
+
 class HighlightResponse(BaseModel):
     video: str
     model: str
     highlights: list[SegmentResult]
+    frames: list[FrameResult] = Field(default_factory=list)
     scan_summary: dict
 
 
@@ -68,6 +84,26 @@ class JobStatusResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = "ok"
+
+
+def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
+    return [
+        FrameResult(
+            timestamp_seconds=f.timestamp_seconds,
+            score=f.score,
+            kills=f.kills,
+            assists=f.assists,
+            score_gain=f.score_gain,
+            special=f.special,
+            is_dead=f.is_dead,
+            description=f.description,
+            my_team_color=f.my_team_color,
+            enemy_team_color=f.enemy_team_color,
+            my_team_score=f.my_team_score,
+            enemy_team_score=f.enemy_team_score,
+        )
+        for f in frames
+    ]
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -117,6 +153,7 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
             )
             for h in highlights
         ],
+        frames=_to_frame_results(detector.all_frames),
         scan_summary=detector.scan_summary,
     )
 
@@ -126,9 +163,7 @@ async def create_highlight_job(request: HighlightRequest) -> JobCreateResponse:
     """Create an async highlight detection job."""
     video_path = Path(request.file_path)
     if not video_path.exists():
-        raise HTTPException(
-            status_code=404, detail=f"Video file not found: {request.file_path}"
-        )
+        raise HTTPException(status_code=404, detail=f"Video file not found: {request.file_path}")
 
     if not check_api_key_available():
         raise HTTPException(status_code=503, detail="Claude CLI is not available")
@@ -170,6 +205,7 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
                 )
                 for h in highlights
             ],
+            frames=_to_frame_results(detector.all_frames),
             scan_summary=detector.scan_summary,
         )
         job_store.mark_completed(job_id, result.model_dump())
