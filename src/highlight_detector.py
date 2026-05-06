@@ -1,6 +1,7 @@
 """Single-pass highlight detection for Splatoon gameplay videos."""
 
 import logging
+import math
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,23 +28,43 @@ def _calc_score_gain(prev_count: int | None, cur_count: int | None) -> int:
     return max(1, min(10, int(gain)))
 
 
+ANOMALY_SIGMA = 2
+ANOMALY_MIN_HISTORY = 3
+ANOMALY_FALLBACK_THRESHOLD = 30
+FIRST_VALUE_FLOOR = 50
+
+
+def _is_anomalous_drop(delta: float, history: list[float]) -> bool:
+    """直近の減少幅履歴に対して、delta が統計的に異常かを判定する.
+
+    履歴が ANOMALY_MIN_HISTORY 未満の場合は固定閾値にフォールバック。
+    十分な履歴がある場合は mean + ANOMALY_SIGMA * σ を超えたら異常。
+    """
+    if len(history) < ANOMALY_MIN_HISTORY:
+        return delta > ANOMALY_FALLBACK_THRESHOLD
+
+    mean = sum(history) / len(history)
+    variance = sum((x - mean) ** 2 for x in history) / len(history)
+    sigma = math.sqrt(variance)
+    threshold = mean + ANOMALY_SIGMA * sigma
+    return delta > threshold
+
+
 def _normalize_counts(
     results: list[tuple[float, dict | str]],
 ) -> None:
     """ゲームカウントを正規化し、raw値と正規化値の両方をdictに格納する.
 
     正規化ルール:
-    1. 最初の非null値が100未満なら100に正規化
+    1. 最初の非null値が FIRST_VALUE_FLOOR 未満なら100に正規化
     2. カウントは減少のみ（増加は異常値として直前値で置換）
-    3. 前フレームから10以上の急変は異常値として直前値で置換
+    3. 減少幅が直近の減少幅の mean + 2σ を超えたら異常値として直前値で置換
     4. nullは直前の正規化済み値で埋める（直前がなければnullのまま）
     """
-    FIRST_VALUE_FLOOR = 50
-    ANOMALY_THRESHOLD = 30
-
     for field in ("my_team_count", "enemy_team_count"):
         raw_field = f"{field}_raw"
         prev_normalized: int | None = None
+        drop_history: list[float] = []
 
         for _ts, result in results:
             if not isinstance(result, dict):
@@ -61,10 +82,13 @@ def _normalize_counts(
             else:
                 if raw_value > prev_normalized:
                     normalized = prev_normalized
-                elif prev_normalized - raw_value > ANOMALY_THRESHOLD:
-                    normalized = prev_normalized
                 else:
-                    normalized = raw_value
+                    delta = prev_normalized - raw_value
+                    if _is_anomalous_drop(delta, drop_history):
+                        normalized = prev_normalized
+                    else:
+                        normalized = raw_value
+                        drop_history.append(delta)
 
             result[field] = normalized
             prev_normalized = normalized
