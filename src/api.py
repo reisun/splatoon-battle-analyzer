@@ -50,8 +50,8 @@ class FrameResult(BaseModel):
     description: str
     my_team_color: str
     enemy_team_color: str
-    my_team_score: int | None
-    enemy_team_score: int | None
+    my_team_count: int | None
+    enemy_team_count: int | None
 
 
 class HighlightResponse(BaseModel):
@@ -99,8 +99,8 @@ def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
             description=f.description,
             my_team_color=f.my_team_color,
             enemy_team_color=f.enemy_team_color,
-            my_team_score=f.my_team_score,
-            enemy_team_score=f.enemy_team_score,
+            my_team_count=f.my_team_count,
+            enemy_team_count=f.enemy_team_count,
         )
         for f in frames
     ]
