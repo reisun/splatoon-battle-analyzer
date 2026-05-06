@@ -39,6 +39,14 @@ class TestComputeScore:
         result = {"kills": 99, "assists": 1, "score_gain": 1, "special": 1}
         assert _compute_score(result) == 10
 
+    def test_is_dead_halves_score(self) -> None:
+        result = {"kills": 5, "assists": 2, "score_gain": 3, "special": 4, "is_dead": True}
+        assert _compute_score(result) == (5 * 2 * 3 * 4) // 2
+
+    def test_is_dead_false_no_penalty(self) -> None:
+        result = {"kills": 5, "assists": 2, "score_gain": 3, "special": 4, "is_dead": False}
+        assert _compute_score(result) == 5 * 2 * 3 * 4
+
 
 class TestCapSegmentDuration:
     """Tests for _cap_segment_duration helper."""
