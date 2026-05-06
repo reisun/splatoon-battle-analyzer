@@ -7,6 +7,7 @@ import numpy as np
 from src.highlight_detector import (
     HighlightDetector,
     HighlightSegment,
+    _calc_score_gain,
     _compute_score,
     _ScoredFrame,
 )
@@ -59,6 +60,34 @@ class TestComputeScore:
         assert _compute_score(result) == 5 * 2 * 3 * 4
 
 
+class TestCalcScoreGain:
+    """Tests for _calc_score_gain helper."""
+
+    def test_both_none(self) -> None:
+        assert _calc_score_gain(None, None) == 1
+
+    def test_prev_none(self) -> None:
+        assert _calc_score_gain(None, 50) == 1
+
+    def test_cur_none(self) -> None:
+        assert _calc_score_gain(50, None) == 1
+
+    def test_no_change(self) -> None:
+        assert _calc_score_gain(50, 50) == 1
+
+    def test_count_decreased(self) -> None:
+        assert _calc_score_gain(50, 40) == 2
+
+    def test_count_decreased_large(self) -> None:
+        assert _calc_score_gain(80, 0) == 9
+
+    def test_clamps_to_ten(self) -> None:
+        assert _calc_score_gain(100, 0) == 10
+
+    def test_count_increased_clamps_to_one(self) -> None:
+        assert _calc_score_gain(30, 50) == 1
+
+
 class TestHighlightSegment:
     """Tests for HighlightSegment dataclass."""
 
@@ -103,13 +132,15 @@ class TestScoreFrames:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer)
         results = [
-            (0.0, {"kills": 5, "assists": 3, "score_gain": 3, "special": 3}),
-            (5.0, {"kills": 1, "assists": 1, "score_gain": 1, "special": 1}),
+            (0.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 80}),
+            (5.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 50}),
         ]
         scored = detector._score_frames(results)
         assert len(scored) == 2
-        assert scored[0].score == 135
-        assert scored[1].score == 1
+        # first frame: prev_count=None, score_gain=1 -> 5*3*1*3=45
+        assert scored[0].score == 45
+        # second frame: (80-50)/10+1=4, score_gain=4 -> 5*3*4*3=180
+        assert scored[1].score == 180
 
     def test_non_dict_result_scores_zero(self) -> None:
         analyzer = MagicMock()
@@ -249,20 +280,30 @@ class TestDetectFlow:
         frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 6
         mock_extract.return_value = frames
 
+        count_map = {
+            "00m00s": 100,
+            "00m05s": 70,
+            "00m10s": 40,
+            "00m15s": 10,
+            "00m20s": 10,
+            "00m25s": 10,
+        }
+
         def mock_analyze(frame, prompt, timestamp):
+            count = count_map.get(timestamp, 100)
             if timestamp in ("00m05s", "00m10s", "00m15s"):
                 return {
                     "kills": 5,
                     "assists": 3,
-                    "score_gain": 3,
                     "special": 3,
+                    "my_team_count": count,
                     "description": "intense fight",
                 }
             return {
                 "kills": 1,
                 "assists": 1,
-                "score_gain": 1,
                 "special": 1,
+                "my_team_count": count,
                 "description": "calm",
             }
 
