@@ -1,6 +1,7 @@
 """Single-pass highlight detection for Splatoon gameplay videos."""
 
 import logging
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 MAX_CLIP_SECONDS = 15
 MAX_TOTAL_SECONDS = 60
+SCORE_GAIN_WINDOW_SECONDS = 40
 
 
 def _calc_score_gain(prev_count: int | None, cur_count: int | None) -> int:
@@ -215,8 +217,9 @@ class HighlightDetector:
     def _score_frames(self, results: list[tuple[float, dict | str]]) -> list[_ScoredFrame]:
         sorted_results = sorted(results, key=lambda x: x[0])
         _normalize_counts(sorted_results)
+        window_size = max(1, int(SCORE_GAIN_WINDOW_SECONDS / self.interval))
+        recent_counts: deque[int] = deque(maxlen=window_size)
         scored: list[_ScoredFrame] = []
-        prev_count: int | None = None
         for timestamp, result in sorted_results:
             score = 0
             description = ""
@@ -224,9 +227,10 @@ class HighlightDetector:
             if isinstance(result, dict):
                 raw = result
                 cur_count = raw.get("my_team_count")
-                raw["score_gain"] = _calc_score_gain(prev_count, cur_count)
+                avg_prev = int(sum(recent_counts) / len(recent_counts)) if recent_counts else None
+                raw["score_gain"] = _calc_score_gain(avg_prev, cur_count)
                 if cur_count is not None:
-                    prev_count = cur_count
+                    recent_counts.append(cur_count)
                 score = _compute_score(raw)
                 description = raw.get("description", "")
             scored.append(_ScoredFrame(timestamp, score, description, raw))
