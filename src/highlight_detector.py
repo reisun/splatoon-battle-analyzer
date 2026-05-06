@@ -18,13 +18,12 @@ MAX_TOTAL_SECONDS = 60
 
 
 def _compute_score(result: dict) -> int:
-    """5項目の掛け算でスコアを計算（1-100000）."""
+    """4項目の掛け算でスコアを計算（1-10000）."""
     kills = max(1, min(10, result.get("kills", 1)))
     assists = max(1, min(10, result.get("assists", 1)))
     score_gain = max(1, min(10, result.get("score_gain", 1)))
-    clutch = max(1, min(10, result.get("clutch", 1)))
     special = max(1, min(10, result.get("special", 1)))
-    return kills * assists * score_gain * clutch * special
+    return kills * assists * score_gain * special
 
 
 def _cap_segment_duration(segment: "HighlightSegment") -> "HighlightSegment":
