@@ -29,14 +29,11 @@ def _compute_score(result: dict) -> int:
     return score
 
 
-def _cap_segment_duration(segment: "HighlightSegment") -> "HighlightSegment":
-    """Cap a segment to MAX_CLIP_SECONDS, centered on the midpoint."""
-    duration = segment.end_seconds - segment.start_seconds
-    if duration > MAX_CLIP_SECONDS:
-        center = (segment.start_seconds + segment.end_seconds) / 2
-        segment.start_seconds = max(0, center - MAX_CLIP_SECONDS / 2)
-        segment.end_seconds = center + MAX_CLIP_SECONDS / 2
-    return segment
+@dataclass
+class _ScoredFrame:
+    timestamp: float
+    score: int
+    description: str
 
 
 @dataclass
@@ -112,77 +109,84 @@ class HighlightDetector:
             "battle_frames": battle_count,
         }
 
-        segments = self._merge_segments(results)
-        segments = [s for s in segments if s.peak_intensity >= self.threshold]
+        scored = self._score_frames(results)
+        segments = self._select_windows(scored)
 
-        segments = [_cap_segment_duration(s) for s in segments]
-        total = sum(s.end_seconds - s.start_seconds for s in segments)
-        if total > MAX_TOTAL_SECONDS:
-            segments.sort(key=lambda s: s.peak_intensity, reverse=True)
-            result_segments: list[HighlightSegment] = []
-            remaining = MAX_TOTAL_SECONDS
-            for s in segments:
-                dur = s.end_seconds - s.start_seconds
-                if dur <= remaining:
-                    result_segments.append(s)
-                    remaining -= dur
-            segments = sorted(result_segments, key=lambda s: s.start_seconds)
+        remaining = MAX_TOTAL_SECONDS
+        budget_segments: list[HighlightSegment] = []
+        for s in segments:
+            dur = s.end_seconds - s.start_seconds
+            if dur <= remaining:
+                budget_segments.append(s)
+                remaining -= dur
 
-        return segments
+        return budget_segments
 
-    def _merge_segments(
+    def _score_frames(
         self, results: list[tuple[float, dict | str]]
-    ) -> list[HighlightSegment]:
-        """Merge consecutive high-score frames into highlight segments."""
-        if not results:
-            return []
-
+    ) -> list[_ScoredFrame]:
         sorted_results = sorted(results, key=lambda x: x[0])
-        segments: list[HighlightSegment] = []
-        current_start: float | None = None
-        current_end: float = 0
-        current_peak: int = 0
-        current_descriptions: list[str] = []
-
+        scored: list[_ScoredFrame] = []
         for timestamp, result in sorted_results:
             score = 0
             description = ""
             if isinstance(result, dict):
                 score = _compute_score(result)
                 description = result.get("description", "")
+            scored.append(_ScoredFrame(timestamp, score, description))
+        return scored
 
-            if score >= self.threshold:
-                if current_start is None:
-                    current_start = timestamp
-                current_end = timestamp
-                current_peak = max(current_peak, score)
-                if description:
-                    current_descriptions.append(description)
-            else:
-                if current_start is not None:
-                    gap = timestamp - current_end
-                    if gap <= self.interval:
-                        continue
-                    segments.append(
-                        HighlightSegment(
-                            start_seconds=current_start,
-                            end_seconds=current_end + self.interval,
-                            peak_intensity=current_peak,
-                            description=self._summarize_descriptions(current_descriptions),
-                        )
-                    )
-                    current_start = None
-                    current_end = 0
-                    current_peak = 0
-                    current_descriptions = []
+    def _select_windows(
+        self, scored: list[_ScoredFrame]
+    ) -> list[HighlightSegment]:
+        """Select best non-overlapping windows by sliding window score sum."""
+        if not scored:
+            return []
 
-        if current_start is not None:
+        window_size = max(1, int(MAX_CLIP_SECONDS / self.interval))
+        n = len(scored)
+
+        windows: list[tuple[int, int, int]] = []
+        for i in range(n - window_size + 1):
+            window = scored[i : i + window_size]
+            total = sum(f.score for f in window)
+            peak = max(f.score for f in window)
+            if peak >= self.threshold:
+                windows.append((i, total, peak))
+
+        if not windows:
+            for i, frame in enumerate(scored):
+                if frame.score >= self.threshold:
+                    windows.append((i, frame.score, frame.score))
+
+        if not windows:
+            return []
+
+        windows.sort(key=lambda w: w[1], reverse=True)
+
+        selected: list[int] = []
+        used: set[int] = set()
+        for start_idx, _total, _peak in windows:
+            end_idx = min(start_idx + window_size - 1, n - 1)
+            frame_indices = set(range(start_idx, end_idx + 1))
+            if frame_indices & used:
+                continue
+            selected.append(start_idx)
+            used.update(frame_indices)
+
+        selected.sort()
+
+        segments: list[HighlightSegment] = []
+        for start_idx in selected:
+            end_idx = min(start_idx + window_size - 1, n - 1)
+            window = scored[start_idx : end_idx + 1]
+            descriptions = [f.description for f in window if f.description]
             segments.append(
                 HighlightSegment(
-                    start_seconds=current_start,
-                    end_seconds=current_end + self.interval,
-                    peak_intensity=current_peak,
-                    description=self._summarize_descriptions(current_descriptions),
+                    start_seconds=scored[start_idx].timestamp,
+                    end_seconds=scored[end_idx].timestamp + self.interval,
+                    peak_intensity=sum(f.score for f in window),
+                    description=self._summarize_descriptions(descriptions),
                 )
             )
 
