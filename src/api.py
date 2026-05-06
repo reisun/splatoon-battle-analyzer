@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
-from src.highlight_detector import HighlightDetector
+from src.highlight_detector import HighlightDetector, HighlightSegment
 from src.job_store import JobStatus, JobStore
 
 logger = logging.getLogger(__name__)
@@ -30,9 +30,20 @@ class HighlightRequest(BaseModel):
     stage1_interval: float = Field(default=30.0, description="Stage 1 scan interval (seconds)")
     stage2_interval: float = Field(default=3.0, description="Stage 2 scan interval (seconds)")
     threshold: int = Field(default=100, description="Score threshold (product of 5 factors)")
-    max_highlights: int = Field(default=4, description="Max highlight regions")
+    max_highlights: int = Field(default=3, description="Max highlight regions")
     model: str | None = Field(default=None, description="Claude model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
+
+
+class FrameResult(BaseModel):
+    timestamp_seconds: float
+    kills_in_log: int = 0
+    assists_in_log: int = 0
+    team_score_increasing: bool = False
+    my_special_active: bool = False
+    is_dead: bool = False
+    score: int = 0
+    description: str = ""
 
 
 class SegmentResult(BaseModel):
@@ -40,6 +51,7 @@ class SegmentResult(BaseModel):
     end_seconds: float
     peak_intensity: int
     description: str
+    frames: list[FrameResult] = Field(default_factory=list)
 
 
 class HighlightResponse(BaseModel):
@@ -113,16 +125,31 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
     return HighlightResponse(
         video=video_path.name,
         model=analyzer.model,
-        highlights=[
-            SegmentResult(
-                start_seconds=h.start_seconds,
-                end_seconds=h.end_seconds,
-                peak_intensity=h.peak_intensity,
-                description=h.description,
-            )
-            for h in highlights
-        ],
+        highlights=[_to_segment_result(h) for h in highlights],
         stage1_summary=detector.stage1_summary,
+    )
+
+
+def _to_segment_result(h: HighlightSegment) -> SegmentResult:
+    """Convert a HighlightSegment to a SegmentResult."""
+    return SegmentResult(
+        start_seconds=h.start_seconds,
+        end_seconds=h.end_seconds,
+        peak_intensity=h.peak_intensity,
+        description=h.description,
+        frames=[
+            FrameResult(
+                timestamp_seconds=f.timestamp_seconds,
+                kills_in_log=f.kills_in_log,
+                assists_in_log=f.assists_in_log,
+                team_score_increasing=f.team_score_increasing,
+                my_special_active=f.my_special_active,
+                is_dead=f.is_dead,
+                score=f.score,
+                description=f.description,
+            )
+            for f in h.frames
+        ],
     )
 
 
@@ -168,15 +195,7 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
         result = HighlightResponse(
             video=Path(request.file_path).name,
             model=analyzer.model,
-            highlights=[
-                SegmentResult(
-                    start_seconds=h.start_seconds,
-                    end_seconds=h.end_seconds,
-                    peak_intensity=h.peak_intensity,
-                    description=h.description,
-                )
-                for h in highlights
-            ],
+            highlights=[_to_segment_result(h) for h in highlights],
             stage1_summary=detector.stage1_summary,
         )
         job_store.mark_completed(job_id, result.model_dump())

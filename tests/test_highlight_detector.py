@@ -6,38 +6,104 @@ import numpy as np
 
 from src.highlight_detector import (
     MAX_CLIP_SECONDS,
+    WINDOW_SIZE,
+    FrameAnalysis,
     HighlightDetector,
     HighlightSegment,
     _cap_segment_duration,
-    _compute_score,
+    _compute_frame_score,
+    _compute_stage1_score,
 )
 
 
-class TestComputeScore:
-    """Tests for _compute_score helper."""
+class TestComputeFrameScore:
+    """Tests for _compute_frame_score helper."""
 
-    def test_all_ones(self) -> None:
-        result = {"kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1}
-        assert _compute_score(result) == 1
+    def test_all_defaults(self) -> None:
+        result: dict = {}
+        assert _compute_frame_score(result) == 1
 
-    def test_all_tens(self) -> None:
-        result = {"kills": 10, "assists": 10, "score_gain": 10, "clutch": 10, "special": 10}
-        assert _compute_score(result) == 100000
+    def test_kills_only(self) -> None:
+        # kills=2 -> kills_score=7, rest=1 -> 7*1*1*1 = 7
+        result = {"kills_in_log": 2}
+        assert _compute_frame_score(result) == 7
 
-    def test_mixed_values(self) -> None:
-        result = {"kills": 5, "assists": 2, "score_gain": 3, "clutch": 1, "special": 4}
-        assert _compute_score(result) == 5 * 2 * 3 * 1 * 4
+    def test_kills_and_special(self) -> None:
+        # kills=2 -> 7, special=true -> 10 => 7*1*1*10 = 70
+        result = {"kills_in_log": 2, "my_special_active": True}
+        assert _compute_frame_score(result) == 70
 
-    def test_missing_keys_default_to_one(self) -> None:
-        assert _compute_score({}) == 1
+    def test_kills_3_caps_at_10(self) -> None:
+        # kills=3 -> min(10, 1+9) = 10
+        result = {"kills_in_log": 3}
+        assert _compute_frame_score(result) == 10
 
-    def test_clamps_below_one(self) -> None:
-        result = {"kills": 0, "assists": -5, "score_gain": 1, "clutch": 1, "special": 1}
-        assert _compute_score(result) == 1
+    def test_kills_above_3_still_10(self) -> None:
+        result = {"kills_in_log": 5}
+        assert _compute_frame_score(result) == 10
 
-    def test_clamps_above_ten(self) -> None:
-        result = {"kills": 99, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1}
-        assert _compute_score(result) == 10
+    def test_assists(self) -> None:
+        # assists=1 -> 4, kills=0 -> 1 => 1*4*1*1 = 4
+        result = {"assists_in_log": 1}
+        assert _compute_frame_score(result) == 4
+
+    def test_team_score_increasing(self) -> None:
+        # score_gain=5 when true
+        result = {"team_score_increasing": True}
+        assert _compute_frame_score(result) == 5
+
+    def test_is_dead_halves_score(self) -> None:
+        # kills=2 -> 7, is_dead -> 7//2 = 3
+        result = {"kills_in_log": 2, "is_dead": True}
+        assert _compute_frame_score(result) == 3
+
+    def test_is_dead_minimum_1(self) -> None:
+        # all defaults -> 1, is_dead -> 1//2 = 0 -> max(1, 0) = 1
+        result = {"is_dead": True}
+        assert _compute_frame_score(result) == 1
+
+    def test_all_high(self) -> None:
+        # kills=3->10, assists=3->10, score=true->5, special=true->10
+        # 10*10*5*10 = 5000
+        result = {
+            "kills_in_log": 3,
+            "assists_in_log": 3,
+            "team_score_increasing": True,
+            "my_special_active": True,
+        }
+        assert _compute_frame_score(result) == 5000
+
+    def test_all_high_but_dead(self) -> None:
+        result = {
+            "kills_in_log": 3,
+            "assists_in_log": 3,
+            "team_score_increasing": True,
+            "my_special_active": True,
+            "is_dead": True,
+        }
+        assert _compute_frame_score(result) == 2500
+
+
+class TestComputeStage1Score:
+    """Tests for _compute_stage1_score helper."""
+
+    def test_all_defaults(self) -> None:
+        assert _compute_stage1_score({}) == 1
+
+    def test_kills_only(self) -> None:
+        result = {"kills_in_log": 2}
+        # kills_score=7, special=1 -> 7
+        assert _compute_stage1_score(result) == 7
+
+    def test_special_active(self) -> None:
+        result = {"my_special_active": True}
+        # kills_score=1, special=10 -> 10
+        assert _compute_stage1_score(result) == 10
+
+    def test_is_dead_halves(self) -> None:
+        result = {"kills_in_log": 1, "is_dead": True}
+        # kills_score=4, special=1 -> 4//2 = 2
+        assert _compute_stage1_score(result) == 2
 
 
 class TestCapSegmentDuration:
@@ -86,6 +152,19 @@ class TestHighlightSegment:
         assert seg.end_seconds == 25.0
         assert seg.peak_intensity == 800
         assert seg.description == "test"
+        assert seg.frames == []
+
+    def test_creation_with_frames(self) -> None:
+        fa = FrameAnalysis(timestamp_seconds=10.0, kills_in_log=2, score=7)
+        seg = HighlightSegment(
+            start_seconds=10.0,
+            end_seconds=25.0,
+            peak_intensity=800,
+            description="test",
+            frames=[fa],
+        )
+        assert len(seg.frames) == 1
+        assert seg.frames[0].kills_in_log == 2
 
 
 class TestHighlightDetectorInit:
@@ -97,7 +176,7 @@ class TestHighlightDetectorInit:
         assert detector.stage1_interval == 30
         assert detector.stage2_interval == 3
         assert detector.threshold == 100
-        assert detector.max_highlights == 4
+        assert detector.max_highlights == 3
 
     def test_custom_params(self) -> None:
         analyzer = MagicMock()
@@ -145,178 +224,124 @@ class TestBuildRegions:
         assert regions[0][1] == 110.0
 
 
-class TestMergeSegments:
-    """Tests for segment merging logic."""
+class TestFindBestWindows:
+    """Tests for sliding window detection logic."""
 
-    def test_empty_results(self) -> None:
+    def test_empty_frames(self) -> None:
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer)
-        segments = detector._merge_segments([])
+        detector = HighlightDetector(analyzer=analyzer, threshold=10)
+        segments = detector._find_best_windows([])
         assert segments == []
 
-    def test_single_high_score_frame(self) -> None:
+    def test_fewer_than_window_size_above_threshold(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=10)
+        frames = [
+            FrameAnalysis(timestamp_seconds=0.0, score=5),
+            FrameAnalysis(timestamp_seconds=3.0, score=6),
+        ]
+        segments = detector._find_best_windows(frames)
+        assert len(segments) == 1
+        assert segments[0].peak_intensity == 11
+        assert segments[0].start_seconds == 0.0
+        assert segments[0].end_seconds == 6.0
+        assert len(segments[0].frames) == 2
+
+    def test_fewer_than_window_size_below_threshold(self) -> None:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
-        # score = 5*3*2*2*2 = 120, above threshold 100
-        results = [
-            (
-                10.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
-                    "description": "action",
-                },
+        frames = [
+            FrameAnalysis(timestamp_seconds=0.0, score=1),
+            FrameAnalysis(timestamp_seconds=3.0, score=1),
+        ]
+        segments = detector._find_best_windows(frames)
+        assert segments == []
+
+    def test_best_window_selected(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(
+            analyzer=analyzer, stage2_interval=3, threshold=10, max_highlights=1
+        )
+        # 10 frames, peak scores in frames 3-7
+        frames = []
+        for i in range(10):
+            score = 50 if 3 <= i <= 7 else 1
+            frames.append(FrameAnalysis(timestamp_seconds=i * 3.0, score=score))
+        segments = detector._find_best_windows(frames)
+        assert len(segments) == 1
+        # Best window of 5 frames should be in the high-score region
+        assert segments[0].peak_intensity == 250  # 5 * 50
+
+    def test_overlapping_windows_excluded(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(
+            analyzer=analyzer, stage2_interval=3, threshold=10, max_highlights=3
+        )
+        # 12 frames, all high score
+        frames = [FrameAnalysis(timestamp_seconds=i * 3.0, score=20) for i in range(12)]
+        segments = detector._find_best_windows(frames)
+        # 12 frames, window_size=5 -> can fit at most 2 non-overlapping windows
+        assert len(segments) == 2
+        # Check they don't overlap
+        for i in range(len(segments) - 1):
+            assert segments[i].end_seconds <= segments[i + 1].start_seconds
+
+    def test_max_highlights_limit(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(
+            analyzer=analyzer, stage2_interval=3, threshold=10, max_highlights=1
+        )
+        frames = [FrameAnalysis(timestamp_seconds=i * 3.0, score=20) for i in range(15)]
+        segments = detector._find_best_windows(frames)
+        assert len(segments) == 1
+
+    def test_threshold_filters_low_windows(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
+        frames = [FrameAnalysis(timestamp_seconds=i * 3.0, score=10) for i in range(5)]
+        # window score = 50, below threshold 100
+        segments = detector._find_best_windows(frames)
+        assert segments == []
+
+    def test_frames_attached_to_segment(self) -> None:
+        analyzer = MagicMock()
+        detector = HighlightDetector(
+            analyzer=analyzer, stage2_interval=3, threshold=10, max_highlights=1
+        )
+        frames = [
+            FrameAnalysis(
+                timestamp_seconds=i * 3.0,
+                kills_in_log=i,
+                score=20,
+                description=f"frame {i}",
             )
+            for i in range(5)
         ]
-        segments = detector._merge_segments(results)
+        segments = detector._find_best_windows(frames)
         assert len(segments) == 1
-        assert segments[0].start_seconds == 10.0
-        assert segments[0].end_seconds == 13.0
-        assert segments[0].peak_intensity == 120
+        assert len(segments[0].frames) == WINDOW_SIZE
+        assert segments[0].frames[0].kills_in_log == 0
+        assert segments[0].frames[4].kills_in_log == 4
 
-    def test_consecutive_frames_merge(self) -> None:
+    def test_sorted_by_time(self) -> None:
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
-        # All scores above 100
-        results = [
-            (
-                10.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
-                    "description": "start",
-                },
-            ),
-            (
-                13.0,
-                {
-                    "kills": 8,
-                    "assists": 3,
-                    "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
-                    "description": "peak",
-                },
-            ),
-            (
-                16.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
-                    "description": "end",
-                },
-            ),
-        ]
-        segments = detector._merge_segments(results)
-        assert len(segments) == 1
-        assert segments[0].start_seconds == 10.0
-        assert segments[0].end_seconds == 19.0
-        assert segments[0].peak_intensity == 8 * 3 * 2 * 2 * 2
-
-    def test_low_score_splits_segments(self) -> None:
-        analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
-        results = [
-            (
-                10.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
-                    "description": "first",
-                },
-            ),
-            (
-                13.0,
-                {
-                    "kills": 1,
-                    "assists": 1,
-                    "score_gain": 1,
-                    "clutch": 1,
-                    "special": 1,
-                    "description": "low",
-                },
-            ),
-            (
-                16.0,
-                {
-                    "kills": 1,
-                    "assists": 1,
-                    "score_gain": 1,
-                    "clutch": 1,
-                    "special": 1,
-                    "description": "low",
-                },
-            ),
-            (
-                19.0,
-                {
-                    "kills": 1,
-                    "assists": 1,
-                    "score_gain": 1,
-                    "clutch": 1,
-                    "special": 1,
-                    "description": "low",
-                },
-            ),
-            (
-                22.0,
-                {
-                    "kills": 8,
-                    "assists": 3,
-                    "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
-                    "description": "second",
-                },
-            ),
-        ]
-        segments = detector._merge_segments(results)
+        detector = HighlightDetector(
+            analyzer=analyzer, stage2_interval=3, threshold=10, max_highlights=3
+        )
+        # 15 frames, two distinct peaks
+        frames = []
+        for i in range(15):
+            if i < 5:
+                score = 30
+            elif i >= 10:
+                score = 40
+            else:
+                score = 1
+            frames.append(FrameAnalysis(timestamp_seconds=i * 3.0, score=score))
+        segments = detector._find_best_windows(frames)
         assert len(segments) == 2
-
-    def test_non_dict_result_treated_as_zero(self) -> None:
-        analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, stage2_interval=3, threshold=100)
-        results = [
-            (
-                10.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
-                    "description": "action",
-                },
-            ),
-            (13.0, "parse error"),
-            (16.0, "parse error"),
-            (19.0, "parse error"),
-            (
-                22.0,
-                {
-                    "kills": 5,
-                    "assists": 3,
-                    "score_gain": 2,
-                    "clutch": 2,
-                    "special": 2,
-                    "description": "more action",
-                },
-            ),
-        ]
-        segments = detector._merge_segments(results)
-        assert len(segments) == 2
+        # Should be sorted by start_seconds, not by score
+        assert segments[0].start_seconds < segments[1].start_seconds
 
 
 class TestDetectFlow:
@@ -329,11 +354,9 @@ class TestDetectFlow:
         analyzer = MagicMock()
         analyzer.analyze_frame_from_memory_with_prompt.return_value = {
             "scene": "lobby",
-            "kills": 1,
-            "assists": 1,
-            "score_gain": 1,
-            "clutch": 1,
-            "special": 1,
+            "kills_in_log": 0,
+            "my_special_active": False,
+            "is_dead": False,
             "reason": "lobby screen",
         }
 
@@ -362,28 +385,24 @@ class TestDetectFlow:
                 if call_count[0] == 2:
                     return {
                         "scene": "battle",
-                        "kills": 5,
-                        "assists": 3,
-                        "score_gain": 2,
-                        "clutch": 2,
-                        "special": 2,
+                        "kills_in_log": 2,
+                        "my_special_active": True,
+                        "is_dead": False,
                         "reason": "intense fight",
                     }
                 return {
                     "scene": "battle",
-                    "kills": 1,
-                    "assists": 1,
-                    "score_gain": 1,
-                    "clutch": 1,
-                    "special": 1,
+                    "kills_in_log": 0,
+                    "my_special_active": False,
+                    "is_dead": False,
                     "reason": "calm",
                 }
             return {
-                "kills": 5,
-                "assists": 3,
-                "score_gain": 2,
-                "clutch": 2,
-                "special": 2,
+                "kills_in_log": 2,
+                "assists_in_log": 1,
+                "team_score_increasing": True,
+                "my_special_active": False,
+                "is_dead": False,
                 "description": "kills happening",
             }
 
@@ -395,11 +414,11 @@ class TestDetectFlow:
         )
         segments = detector.detect("/fake/video.mp4")
 
+        # Stage 2: 3 frames, score=7*4*5*1=140 each, total=420 > threshold=100
         assert len(segments) >= 1
         assert detector.stage1_summary["total_frames"] == 4
-        # All 4 are battle frames, but only 1 has score > 1
-        # Actually all are candidates (score>=1), top 4 selected
-        assert detector.stage1_summary["candidate_frames"] == 4
+        # max_highlights=3, so at most 3 candidates selected from 4 battle frames
+        assert detector.stage1_summary["candidate_frames"] == 3
 
     @patch("src.highlight_detector.extract_frames")
     def test_progress_callback_called(self, mock_extract: MagicMock) -> None:
@@ -410,11 +429,9 @@ class TestDetectFlow:
         analyzer = MagicMock()
         analyzer.analyze_frame_from_memory_with_prompt.return_value = {
             "scene": "lobby",
-            "kills": 1,
-            "assists": 1,
-            "score_gain": 1,
-            "clutch": 1,
-            "special": 1,
+            "kills_in_log": 0,
+            "my_special_active": False,
+            "is_dead": False,
             "reason": "lobby screen",
         }
 
@@ -450,28 +467,24 @@ class TestDetectFlow:
                 if call_count[0] == 2:
                     return {
                         "scene": "battle",
-                        "kills": 5,
-                        "assists": 3,
-                        "score_gain": 2,
-                        "clutch": 2,
-                        "special": 2,
+                        "kills_in_log": 2,
+                        "my_special_active": True,
+                        "is_dead": False,
                         "reason": "intense fight",
                     }
                 return {
                     "scene": "battle",
-                    "kills": 1,
-                    "assists": 1,
-                    "score_gain": 1,
-                    "clutch": 1,
-                    "special": 1,
+                    "kills_in_log": 0,
+                    "my_special_active": False,
+                    "is_dead": False,
                     "reason": "calm",
                 }
             return {
-                "kills": 5,
-                "assists": 3,
-                "score_gain": 2,
-                "clutch": 2,
-                "special": 2,
+                "kills_in_log": 2,
+                "assists_in_log": 1,
+                "team_score_increasing": True,
+                "my_special_active": False,
+                "is_dead": False,
                 "description": "kills happening",
             }
 
@@ -497,7 +510,7 @@ class TestDetectFlow:
 
     @patch("src.highlight_detector.extract_frames")
     def test_battle_with_low_score_not_highlighted(self, mock_extract: MagicMock) -> None:
-        """Battle frames with all-1 scores still become candidates but don't pass threshold."""
+        """Battle frames with low scores become candidates but don't pass threshold."""
         stage1_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 2
         stage2_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
 
@@ -509,19 +522,17 @@ class TestDetectFlow:
             if prompt == STAGE1_PROMPT:
                 return {
                     "scene": "battle",
-                    "kills": 1,
-                    "assists": 1,
-                    "score_gain": 1,
-                    "clutch": 1,
-                    "special": 1,
+                    "kills_in_log": 0,
+                    "my_special_active": False,
+                    "is_dead": False,
                     "reason": "low action",
                 }
             return {
-                "kills": 1,
-                "assists": 1,
-                "score_gain": 1,
-                "clutch": 1,
-                "special": 1,
+                "kills_in_log": 0,
+                "assists_in_log": 0,
+                "team_score_increasing": False,
+                "my_special_active": False,
+                "is_dead": False,
                 "description": "nothing happening",
             }
 
@@ -535,3 +546,47 @@ class TestDetectFlow:
         assert segments == []
         assert detector.stage1_summary["battle_frames"] == 2
         assert detector.stage1_summary["candidate_frames"] == 2
+
+    @patch("src.highlight_detector.extract_frames")
+    def test_segments_have_frames(self, mock_extract: MagicMock) -> None:
+        """Each highlight segment should contain FrameAnalysis details."""
+        stage1_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 2
+        # Need at least 5 stage2 frames for a full window
+        stage2_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 5
+
+        mock_extract.side_effect = [stage1_frames, stage2_frames]
+
+        def mock_analyze(frame, prompt, timestamp):
+            from src.battle_analyzer import STAGE1_PROMPT
+
+            if prompt == STAGE1_PROMPT:
+                return {
+                    "scene": "battle",
+                    "kills_in_log": 2,
+                    "my_special_active": False,
+                    "is_dead": False,
+                    "reason": "action",
+                }
+            return {
+                "kills_in_log": 2,
+                "assists_in_log": 0,
+                "team_score_increasing": True,
+                "my_special_active": False,
+                "is_dead": False,
+                "description": "kills happening",
+            }
+
+        analyzer = MagicMock()
+        analyzer.analyze_frame_from_memory_with_prompt.side_effect = mock_analyze
+
+        detector = HighlightDetector(
+            analyzer=analyzer, stage1_interval=30, stage2_interval=3, threshold=10
+        )
+        segments = detector.detect("/fake/video.mp4")
+
+        assert len(segments) >= 1
+        for seg in segments:
+            assert len(seg.frames) > 0
+            for fa in seg.frames:
+                assert isinstance(fa, FrameAnalysis)
+                assert fa.kills_in_log == 2

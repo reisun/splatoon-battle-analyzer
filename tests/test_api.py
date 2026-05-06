@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api import app, job_store
-from src.highlight_detector import HighlightSegment
+from src.highlight_detector import FrameAnalysis, HighlightSegment
 
 client = TestClient(app)
 
@@ -58,6 +58,16 @@ class TestAnalyzeHighlightsEndpoint:
                 end_seconds=130.0,
                 peak_intensity=8,
                 description="Intense battle",
+                frames=[
+                    FrameAnalysis(
+                        timestamp_seconds=100.0,
+                        kills_in_log=2,
+                        assists_in_log=1,
+                        team_score_increasing=True,
+                        score=140,
+                        description="kills happening",
+                    ),
+                ],
             ),
         ]
 
@@ -68,7 +78,7 @@ class TestAnalyzeHighlightsEndpoint:
                 "start": 60.0,
                 "end": 180.0,
                 "threshold": 100,
-                "max_highlights": 4,
+                "max_highlights": 3,
             },
         )
         assert response.status_code == 200
@@ -77,6 +87,8 @@ class TestAnalyzeHighlightsEndpoint:
         assert len(data["highlights"]) == 1
         assert data["highlights"][0]["peak_intensity"] == 8
         assert data["highlights"][0]["start_seconds"] == 100.0
+        assert len(data["highlights"][0]["frames"]) == 1
+        assert data["highlights"][0]["frames"][0]["kills_in_log"] == 2
 
     @patch("src.api.check_api_key_available", return_value=True)
     @patch("src.api.HighlightDetector.detect")

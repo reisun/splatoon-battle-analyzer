@@ -1,8 +1,10 @@
 """Two-stage highlight detection for Splatoon gameplay videos."""
 
+from __future__ import annotations
+
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.battle_analyzer import STAGE1_PROMPT, STAGE2_PROMPT, BattleAnalyzer
@@ -14,19 +16,50 @@ logger = logging.getLogger(__name__)
 
 MAX_CLIP_SECONDS = 15
 MAX_TOTAL_SECONDS = 60
+WINDOW_SIZE = 5  # 5 frames * 3s interval = 15s
 
 
-def _compute_score(result: dict) -> int:
-    """5項目の掛け算でスコアを計算（1-100000）."""
-    kills = max(1, min(10, result.get("kills", 1)))
-    assists = max(1, min(10, result.get("assists", 1)))
-    score_gain = max(1, min(10, result.get("score_gain", 1)))
-    clutch = max(1, min(10, result.get("clutch", 1)))
-    special = max(1, min(10, result.get("special", 1)))
-    return kills * assists * score_gain * clutch * special
+def _compute_frame_score(result: dict) -> int:
+    """観測値からスコアを計算。"""
+    kills = result.get("kills_in_log", 0)
+    assists = result.get("assists_in_log", 0)
+    team_score_increasing = result.get("team_score_increasing", False)
+    my_special_active = result.get("my_special_active", False)
+    is_dead = result.get("is_dead", False)
+
+    # 各項目を1-10にマッピング
+    kills_score = min(10, 1 + kills * 3)  # 0->1, 1->4, 2->7, 3+->10
+    assists_score = min(10, 1 + assists * 3)  # 同上
+    score_gain = 5 if team_score_increasing else 1
+    special = 10 if my_special_active else 1
+
+    total = kills_score * assists_score * score_gain * special
+
+    # やられている場合はスコア半減
+    if is_dead:
+        total = total // 2
+
+    return max(1, total)
 
 
-def _cap_segment_duration(segment: "HighlightSegment") -> "HighlightSegment":
+def _compute_stage1_score(result: dict) -> int:
+    """Stage1用の簡易スコア。"""
+    kills = result.get("kills_in_log", 0)
+    my_special_active = result.get("my_special_active", False)
+    is_dead = result.get("is_dead", False)
+
+    kills_score = min(10, 1 + kills * 3)
+    special = 10 if my_special_active else 1
+
+    total = kills_score * special
+
+    if is_dead:
+        total = total // 2
+
+    return max(1, total)
+
+
+def _cap_segment_duration(segment: HighlightSegment) -> HighlightSegment:
     """Cap a segment to MAX_CLIP_SECONDS, centered on the midpoint."""
     duration = segment.end_seconds - segment.start_seconds
     if duration > MAX_CLIP_SECONDS:
@@ -37,11 +70,24 @@ def _cap_segment_duration(segment: "HighlightSegment") -> "HighlightSegment":
 
 
 @dataclass
+class FrameAnalysis:
+    timestamp_seconds: float
+    kills_in_log: int = 0
+    assists_in_log: int = 0
+    team_score_increasing: bool = False
+    my_special_active: bool = False
+    is_dead: bool = False
+    score: int = 0
+    description: str = ""
+
+
+@dataclass
 class HighlightSegment:
     start_seconds: float
     end_seconds: float
     peak_intensity: int
     description: str
+    frames: list[FrameAnalysis] = field(default_factory=list)
 
 
 class HighlightDetector:
@@ -53,7 +99,7 @@ class HighlightDetector:
         stage1_interval: float = 30,
         stage2_interval: float = 3,
         threshold: int = 100,
-        max_highlights: int = 4,
+        max_highlights: int = 3,
     ) -> None:
         self.analyzer = analyzer
         self.stage1_interval = stage1_interval
@@ -94,14 +140,18 @@ class HighlightDetector:
                 )
             except Exception:
                 logger.exception("Stage 1 failed for frame at %s", ts_label)
-                result = {"scene": "other", "kills": 1, "reason": "analysis failed"}
+                result = {
+                    "scene": "other",
+                    "kills_in_log": 0,
+                    "reason": "analysis failed",
+                }
             stage1_results.append((timestamp_sec, result))
 
             if isinstance(result, dict):
                 scene = result.get("scene", "other")
                 if scene == "battle":
                     battle_count += 1
-                    score = _compute_score(result)
+                    score = _compute_stage1_score(result)
                     candidates.append((timestamp_sec, score))
 
             if progress_callback:
@@ -123,7 +173,6 @@ class HighlightDetector:
 
         # Stage 2: fine-grained analysis of candidate regions
         regions = self._build_regions(candidate_timestamps, start_seconds, end_seconds)
-        stage2_results: list[tuple[float, dict | str]] = []
 
         # Pre-extract all Stage 2 frames to know total count for progress
         all_stage2_frames: list[tuple[float, list]] = []
@@ -139,6 +188,7 @@ class HighlightDetector:
             all_stage2_frames.append((region_start, frames))
             total_stage2_frames += len(frames)
 
+        frame_analyses: list[FrameAnalysis] = []
         stage2_done = 0
         for region_start, frames in all_stage2_frames:
             for i, frame in enumerate(frames):
@@ -150,16 +200,44 @@ class HighlightDetector:
                     )
                 except Exception:
                     logger.exception("Stage 2 failed for frame at %s", ts_label)
-                    result = {"kills": 1, "description": "analysis failed"}
-                stage2_results.append((timestamp_sec, result))
+                    result = {"kills_in_log": 0, "description": "analysis failed"}
+
+                score = _compute_frame_score(result) if isinstance(result, dict) else 1
+
+                fa = FrameAnalysis(
+                    timestamp_seconds=timestamp_sec,
+                    kills_in_log=(
+                        result.get("kills_in_log", 0) if isinstance(result, dict) else 0
+                    ),
+                    assists_in_log=(
+                        result.get("assists_in_log", 0) if isinstance(result, dict) else 0
+                    ),
+                    team_score_increasing=(
+                        result.get("team_score_increasing", False)
+                        if isinstance(result, dict)
+                        else False
+                    ),
+                    my_special_active=(
+                        result.get("my_special_active", False)
+                        if isinstance(result, dict)
+                        else False
+                    ),
+                    is_dead=(
+                        result.get("is_dead", False) if isinstance(result, dict) else False
+                    ),
+                    score=score,
+                    description=(
+                        result.get("description", "") if isinstance(result, dict) else ""
+                    ),
+                )
+                frame_analyses.append(fa)
 
                 stage2_done += 1
                 if progress_callback:
                     progress_callback(2, stage2_done, total_stage2_frames)
 
-        # Merge into segments and filter by threshold
-        segments = self._merge_segments(stage2_results)
-        segments = [s for s in segments if s.peak_intensity >= self.threshold]
+        # Sliding window detection (replaces _merge_segments)
+        segments = self._find_best_windows(frame_analyses)
 
         # Cap each segment duration and enforce total time limit
         segments = [_cap_segment_duration(s) for s in segments]
@@ -210,63 +288,77 @@ class HighlightDetector:
 
         return merged
 
-    def _merge_segments(
-        self, results: list[tuple[float, dict | str]]
+    def _find_best_windows(
+        self,
+        frame_analyses: list[FrameAnalysis],
     ) -> list[HighlightSegment]:
-        """Merge consecutive high-score frames into highlight segments."""
-        if not results:
-            return []
-
-        results.sort(key=lambda x: x[0])
-        segments: list[HighlightSegment] = []
-        current_start: float | None = None
-        current_end: float = 0
-        current_peak: int = 0
-        current_descriptions: list[str] = []
-
-        for timestamp, result in results:
-            score = 0
-            description = ""
-            if isinstance(result, dict):
-                score = _compute_score(result)
-                description = result.get("description", "")
-
-            if score >= self.threshold:
-                if current_start is None:
-                    current_start = timestamp
-                current_end = timestamp
-                current_peak = max(current_peak, score)
-                if description:
-                    current_descriptions.append(description)
-            else:
-                if current_start is not None:
-                    gap = timestamp - current_end
-                    if gap <= self.stage2_interval:
-                        continue
-                    segments.append(
-                        HighlightSegment(
-                            start_seconds=current_start,
-                            end_seconds=current_end + self.stage2_interval,
-                            peak_intensity=current_peak,
-                            description=self._summarize_descriptions(current_descriptions),
-                        )
-                    )
-                    current_start = None
-                    current_end = 0
-                    current_peak = 0
-                    current_descriptions = []
-
-        if current_start is not None:
-            segments.append(
+        """スライディングウィンドウで最高スコアの区間を検出。"""
+        if len(frame_analyses) < WINDOW_SIZE:
+            # フレームが5未満の場合は全フレームを1つのセグメントに
+            if not frame_analyses:
+                return []
+            total_score = sum(f.score for f in frame_analyses)
+            if total_score < self.threshold:
+                return []
+            return [
                 HighlightSegment(
-                    start_seconds=current_start,
-                    end_seconds=current_end + self.stage2_interval,
-                    peak_intensity=current_peak,
-                    description=self._summarize_descriptions(current_descriptions),
+                    start_seconds=frame_analyses[0].timestamp_seconds,
+                    end_seconds=(
+                        frame_analyses[-1].timestamp_seconds + self.stage2_interval
+                    ),
+                    peak_intensity=total_score,
+                    description=self._summarize_descriptions(
+                        [f.description for f in frame_analyses]
+                    ),
+                    frames=list(frame_analyses),
                 )
-            )
+            ]
 
-        return segments
+        # 各ウィンドウのスコアを計算
+        windows: list[tuple[int, int, list[FrameAnalysis]]] = []
+        for i in range(len(frame_analyses) - WINDOW_SIZE + 1):
+            window_frames = frame_analyses[i : i + WINDOW_SIZE]
+            window_score = sum(f.score for f in window_frames)
+            windows.append((window_score, i, window_frames))
+
+        # スコア降順にソート
+        windows.sort(key=lambda x: x[0], reverse=True)
+
+        # 重複しない上位N個を選択
+        selected: list[HighlightSegment] = []
+        used_indices: set[int] = set()
+
+        for window_score, start_idx, window_frames in windows:
+            if len(selected) >= self.max_highlights:
+                break
+
+            # threshold以下はスキップ
+            if window_score < self.threshold:
+                break
+
+            # 重複チェック
+            window_indices = set(range(start_idx, start_idx + WINDOW_SIZE))
+            if window_indices & used_indices:
+                continue
+
+            used_indices |= window_indices
+
+            segment = HighlightSegment(
+                start_seconds=window_frames[0].timestamp_seconds,
+                end_seconds=(
+                    window_frames[-1].timestamp_seconds + self.stage2_interval
+                ),
+                peak_intensity=window_score,
+                description=self._summarize_descriptions(
+                    [f.description for f in window_frames]
+                ),
+                frames=list(window_frames),
+            )
+            selected.append(segment)
+
+        # 時系列順にソート
+        selected.sort(key=lambda s: s.start_seconds)
+        return selected
 
     @staticmethod
     def _summarize_descriptions(descriptions: list[str]) -> str:
