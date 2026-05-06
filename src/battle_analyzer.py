@@ -29,63 +29,29 @@ def _save_temp_frame(frame: np.ndarray) -> str:
     return path
 
 
-ANALYSIS_PROMPT = """あなたはスプラトゥーンのゲーム画面を分析するアシスタントです。
-以下のスクリーンショットから戦況を読み取り、JSON形式で回答してください。
+FRAME_ANALYSIS_PROMPT = """スプラトゥーンのゲーム画面スクリーンショットを詳細に分析してください。
 
-回答フォーマット:
-{
-  "game_mode": "ナワバリバトル/ガチエリア/ガチヤグラ/ガチホコ/ガチアサリ のいずれか、または不明",
-  "time_remaining": "残り時間（秒数）。不明なら null",
-  "score": {"player_team": null, "enemy_team": null},
-  "team_status": {
-    "player_team": {"alive": 0, "splatted": 0},
-    "enemy_team": {"alive": 0, "splatted": 0}
-  },
-  "map_control": "味方優勢/互角/敵優勢/不明",
-  "special_gauge": "0-100の数値。不明なら null",
-  "events": ["発生中のイベントを列挙"],
-  "highlight_score": "1-10の整数（10が最も盛り上がっている）",
-  "highlight_reason": "スコアの理由を短く"
-}
+■ UI要素の位置:
+- 画面上部中央: 試合タイマー（残り時間）
+- タイマーの左側: 自チームのイカランプ4つ（グレーアウト＝デス中）
+- タイマーの右側: 相手チームのイカランプ4つ（グレーアウト＝デス中）
+- タイマーの下: ゲーム進行バー（カウントが少ない方が勝っている）
+- 画面下部中央: キルログ（複数の名前＝連続キル）
 
-見えない項目は null としてください。推測せず、見えるものだけ報告してください。"""
+■ チームカラーの確認方法:
+自チームの色はタイマー左側のイカランプの色で確認してください。
+相手チームの色はタイマー右側のイカランプの色で確認してください。
 
-STAGE1_PROMPT = """Analyze this Splatoon gameplay screenshot. Key UI elements:
-- Top center: match timer
-- Left of timer: 4 ally icons (grayed out = dead)
-- Right of timer: 4 enemy icons (grayed out = dead)
-- Below timer: game progress bars (lower count = winning)
-- Bottom center: kill log (multiple names = multi-kill streak)
+■ 各項目を1（特になし）〜10（非常に激しい）でスコアリング:
+- kills: プレイヤーが敵を倒したか？画面下部のキルログを確認
+- assists: プレイヤーがキルをアシストしたか？
+- score_gain: 自チームのスコアが目立って増加しているか？
+- clutch: チームが負けていて、かつスコアが改善していないか？（高い＝追い詰められた緊迫状況）
+- special: スペシャルウェポンが発動中、またはその効果が見えるか？
 
-Score each factor from 1 (nothing notable) to 10 (extremely intense):
-- kills: Did the player eliminate enemies? Check kill log at bottom center.
-- assists: Did the player assist in eliminating enemies?
-- score_gain: Is the player's team score increasing noticeably?
-- clutch: Is the team losing AND the score is NOT improving? (high = desperate/tense situation)
-- special: Is a special weapon being activated or its effects visible?
-
-Answer in JSON only:
-{"scene": "battle", "kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1, "reason": "brief description"}
-scene must be one of: battle, lobby, result, other
-All scores must be 1-10. If unsure, use 1."""
-
-STAGE2_PROMPT = """Analyze this Splatoon battle screenshot in detail. Key UI elements:
-- Top center: match timer
-- Left of timer: 4 ally icons (grayed out = dead)
-- Right of timer: 4 enemy icons (grayed out = dead)
-- Below timer: game progress bars (lower count = winning)
-- Bottom center: kill log (multiple names = multi-kill streak)
-
-Score each factor from 1 (nothing notable) to 10 (extremely intense):
-- kills: Did the player eliminate enemies? Check kill log at bottom center.
-- assists: Did the player assist in eliminating enemies?
-- score_gain: Is the player's team score increasing noticeably?
-- clutch: Is the team losing AND the score is NOT improving? (high = desperate/tense situation)
-- special: Is a special weapon being activated or its effects visible?
-
-Answer in JSON only:
-{"kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1, "description": "what is happening"}
-All scores must be 1-10. If unsure, use 1."""
+JSONのみで回答してください:
+{"kills": 1, "assists": 1, "score_gain": 1, "clutch": 1, "special": 1, "my_team_color": "自チームの色", "enemy_team_color": "相手チームの色", "my_team_score": null, "enemy_team_score": null, "description": "現在の状況の説明"}
+スコアは全て1-10。不明なら1。チームスコアが不明ならnull。"""
 
 
 def parse_llm_response(text: str) -> dict | str:
@@ -181,7 +147,7 @@ class BattleAnalyzer:
             raise FileNotFoundError(f"Image file not found: {image_path}")
 
         logger.info("Analyzing frame: %s", image_path.name)
-        result = self._call_cli(ANALYSIS_PROMPT, str(image_path.resolve()))
+        result = self._call_cli(FRAME_ANALYSIS_PROMPT, str(image_path.resolve()))
         logger.info("Analysis complete for: %s", image_path.name)
         return parse_llm_response(result)
 
@@ -198,7 +164,7 @@ class BattleAnalyzer:
         tmp_path = _save_temp_frame(frame)
         try:
             logger.info("Analyzing frame at %s", timestamp)
-            result = self._call_cli(ANALYSIS_PROMPT, tmp_path)
+            result = self._call_cli(FRAME_ANALYSIS_PROMPT, tmp_path)
             logger.info("Analysis complete for frame at %s", timestamp)
             return parse_llm_response(result)
         finally:

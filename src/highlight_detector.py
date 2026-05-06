@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.battle_analyzer import STAGE2_PROMPT, BattleAnalyzer
+from src.battle_analyzer import FRAME_ANALYSIS_PROMPT, BattleAnalyzer
 from src.frame_extractor import extract_frames
 
 ProgressCallback = Callable[[int, int, int], None]  # (phase, frames_done, frames_total)
@@ -86,7 +86,7 @@ class HighlightDetector:
             ts_label = self._format_timestamp(timestamp_sec)
             try:
                 result = self.analyzer.analyze_frame_from_memory_with_prompt(
-                    frames[index], STAGE2_PROMPT, ts_label
+                    frames[index], FRAME_ANALYSIS_PROMPT, ts_label
                 )
             except Exception:
                 logger.exception("Analysis failed for frame at %s", ts_label)
