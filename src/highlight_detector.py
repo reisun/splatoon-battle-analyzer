@@ -49,8 +49,8 @@ class FrameAnalysis:
     description: str
     my_team_color: str
     enemy_team_color: str
-    my_team_score: int | None
-    enemy_team_score: int | None
+    my_team_count: int | None
+    enemy_team_count: int | None
 
 
 @dataclass
@@ -140,8 +140,8 @@ class HighlightDetector:
                 description=f.raw.get("description", ""),
                 my_team_color=f.raw.get("my_team_color", ""),
                 enemy_team_color=f.raw.get("enemy_team_color", ""),
-                my_team_score=f.raw.get("my_team_score"),
-                enemy_team_score=f.raw.get("enemy_team_score"),
+                my_team_count=f.raw.get("my_team_count"),
+                enemy_team_count=f.raw.get("enemy_team_count"),
             )
             for f in scored
         ]
