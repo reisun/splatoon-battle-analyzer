@@ -25,6 +25,49 @@ def _calc_score_gain(prev_count: int | None, cur_count: int | None) -> int:
     return max(1, min(10, int(gain)))
 
 
+def _normalize_counts(
+    results: list[tuple[float, dict | str]],
+) -> None:
+    """ゲームカウントを正規化し、raw値と正規化値の両方をdictに格納する.
+
+    正規化ルール:
+    1. 最初の非null値が100未満なら100に正規化
+    2. カウントは減少のみ（増加は異常値として直前値で置換）
+    3. 前フレームから10以上の急変は異常値として直前値で置換
+    4. nullは直前の正規化済み値で埋める（直前がなければnullのまま）
+    """
+    FIRST_VALUE_FLOOR = 50
+    ANOMALY_THRESHOLD = 30
+
+    for field in ("my_team_count", "enemy_team_count"):
+        raw_field = f"{field}_raw"
+        prev_normalized: int | None = None
+
+        for _ts, result in results:
+            if not isinstance(result, dict):
+                continue
+
+            raw_value = result.get(field)
+            result[raw_field] = raw_value
+
+            if raw_value is None:
+                result[field] = prev_normalized
+                continue
+
+            if prev_normalized is None:
+                normalized = 100 if raw_value < FIRST_VALUE_FLOOR else raw_value
+            else:
+                if raw_value > prev_normalized:
+                    normalized = prev_normalized
+                elif prev_normalized - raw_value > ANOMALY_THRESHOLD:
+                    normalized = prev_normalized
+                else:
+                    normalized = raw_value
+
+            result[field] = normalized
+            prev_normalized = normalized
+
+
 def _compute_score(result: dict) -> int:
     """4項目の掛け算でスコアを計算。デス中は半減."""
     kills = max(1, min(10, result.get("kills", 1)))
@@ -59,6 +102,8 @@ class FrameAnalysis:
     enemy_team_color: str
     my_team_count: int | None
     enemy_team_count: int | None
+    my_team_count_raw: int | None
+    enemy_team_count_raw: int | None
 
 
 @dataclass
@@ -150,6 +195,8 @@ class HighlightDetector:
                 enemy_team_color=f.raw.get("enemy_team_color", ""),
                 my_team_count=f.raw.get("my_team_count"),
                 enemy_team_count=f.raw.get("enemy_team_count"),
+                my_team_count_raw=f.raw.get("my_team_count_raw"),
+                enemy_team_count_raw=f.raw.get("enemy_team_count_raw"),
             )
             for f in scored
         ]
@@ -167,6 +214,7 @@ class HighlightDetector:
 
     def _score_frames(self, results: list[tuple[float, dict | str]]) -> list[_ScoredFrame]:
         sorted_results = sorted(results, key=lambda x: x[0])
+        _normalize_counts(sorted_results)
         scored: list[_ScoredFrame] = []
         prev_count: int | None = None
         for timestamp, result in sorted_results:
