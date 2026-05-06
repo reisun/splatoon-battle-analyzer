@@ -18,29 +18,14 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-MAX_IMAGE_WIDTH = 960
-MAX_IMAGE_HEIGHT = 540
-
 DEFAULT_MODEL = "haiku"
-
-
-def _resize_if_needed(frame: np.ndarray) -> np.ndarray:
-    """Resize frame to half-HD (960x540) if larger."""
-    h, w = frame.shape[:2]
-    if w <= MAX_IMAGE_WIDTH and h <= MAX_IMAGE_HEIGHT:
-        return frame
-    scale = min(MAX_IMAGE_WIDTH / w, MAX_IMAGE_HEIGHT / h)
-    new_w = int(w * scale)
-    new_h = int(h * scale)
-    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
 def _save_temp_frame(frame: np.ndarray) -> str:
     """Save frame to a temporary JPEG file and return its path."""
-    resized = _resize_if_needed(frame)
     fd, path = tempfile.mkstemp(suffix=".jpg")
     os.close(fd)
-    cv2.imwrite(path, resized)
+    cv2.imwrite(path, frame)
     return path
 
 

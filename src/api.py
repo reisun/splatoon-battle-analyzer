@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -17,7 +16,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Splatoon Battle Analyzer",
     description="Highlight detection API for Splatoon gameplay videos",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 job_store = JobStore()
@@ -27,10 +26,8 @@ class HighlightRequest(BaseModel):
     file_path: str = Field(description="Absolute path to the video file on server")
     start: float | None = Field(default=None, description="Start time in seconds")
     end: float | None = Field(default=None, description="End time in seconds")
-    stage1_interval: float = Field(default=30.0, description="Stage 1 scan interval (seconds)")
-    stage2_interval: float = Field(default=3.0, description="Stage 2 scan interval (seconds)")
+    interval: float = Field(default=5.0, description="Frame scan interval (seconds)")
     threshold: int = Field(default=100, description="Score threshold (product of 5 factors)")
-    max_highlights: int = Field(default=4, description="Max highlight regions")
     model: str | None = Field(default=None, description="Claude model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
 
@@ -46,7 +43,7 @@ class HighlightResponse(BaseModel):
     video: str
     model: str
     highlights: list[SegmentResult]
-    stage1_summary: dict
+    scan_summary: dict
 
 
 class JobCreateResponse(BaseModel):
@@ -95,10 +92,8 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
     )
     detector = HighlightDetector(
         analyzer=analyzer,
-        stage1_interval=request.stage1_interval,
-        stage2_interval=request.stage2_interval,
+        interval=request.interval,
         threshold=request.threshold,
-        max_highlights=request.max_highlights,
     )
 
     try:
@@ -122,7 +117,7 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
             )
             for h in highlights
         ],
-        stage1_summary=detector.stage1_summary,
+        scan_summary=detector.scan_summary,
     )
 
 
@@ -149,10 +144,8 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
         analyzer = BattleAnalyzer(model=request.model, concurrency=request.concurrency)
         detector = HighlightDetector(
             analyzer=analyzer,
-            stage1_interval=request.stage1_interval,
-            stage2_interval=request.stage2_interval,
+            interval=request.interval,
             threshold=request.threshold,
-            max_highlights=request.max_highlights,
         )
 
         def on_progress(phase: int, frames_done: int, frames_total: int) -> None:
@@ -177,7 +170,7 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
                 )
                 for h in highlights
             ],
-            stage1_summary=detector.stage1_summary,
+            scan_summary=detector.scan_summary,
         )
         job_store.mark_completed(job_id, result.model_dump())
     except Exception as e:

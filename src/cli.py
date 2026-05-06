@@ -120,28 +120,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Analysis mode (default: timeline)",
     )
     parser.add_argument(
-        "--stage1-interval",
-        type=float,
-        default=30.0,
-        help="Stage 1 frame interval in seconds for highlight mode (default: 30)",
-    )
-    parser.add_argument(
-        "--stage2-interval",
+        "--highlight-interval",
         type=float,
         default=5.0,
-        help="Stage 2 frame interval in seconds for highlight mode (default: 5)",
+        help="Frame interval in seconds for highlight mode (default: 5)",
     )
     parser.add_argument(
         "--threshold",
         type=int,
-        default=5,
-        help="Intensity threshold for highlight candidates (default: 5)",
-    )
-    parser.add_argument(
-        "--max-highlights",
-        type=int,
-        default=3,
-        help="Maximum number of highlight regions to analyze in Stage 2 (default: 3)",
+        default=100,
+        help="Score threshold for highlight detection (default: 100)",
     )
     return parser.parse_args(argv)
 
@@ -284,7 +272,7 @@ def run(argv: list[str] | None = None) -> int:
 
     video_path = Path(args.input)
 
-    # Highlight mode: use 2-stage pipeline
+    # Highlight mode
     if args.mode == "highlight":
         return _run_highlight_mode(args)
 
@@ -354,7 +342,7 @@ def run(argv: list[str] | None = None) -> int:
 
 
 def _run_highlight_mode(args: argparse.Namespace) -> int:
-    """Run the 2-stage highlight detection pipeline."""
+    """Run highlight detection pipeline."""
     if not check_api_key_available():
         logger.error("Claude CLI is not available.")
         return 1
@@ -362,10 +350,8 @@ def _run_highlight_mode(args: argparse.Namespace) -> int:
     analyzer = BattleAnalyzer(concurrency=args.concurrency, model=args.model)
     detector = HighlightDetector(
         analyzer=analyzer,
-        stage1_interval=args.stage1_interval,
-        stage2_interval=args.stage2_interval,
+        interval=args.highlight_interval,
         threshold=args.threshold,
-        max_highlights=args.max_highlights,
     )
 
     video_path = Path(args.input)
@@ -380,9 +366,9 @@ def _run_highlight_mode(args: argparse.Namespace) -> int:
         return 1
 
     if args.output_format == "json":
-        output_text = format_highlight_json(highlights, detector.stage1_summary, args, analyzer.model)
+        output_text = format_highlight_json(highlights, detector.scan_summary, args, analyzer.model)
     else:
-        output_text = format_highlight_text(highlights, detector.stage1_summary)
+        output_text = format_highlight_text(highlights, detector.scan_summary)
 
     if args.output_file:
         output_path = Path(args.output_file)
@@ -397,7 +383,7 @@ def _run_highlight_mode(args: argparse.Namespace) -> int:
 
 def format_highlight_json(
     highlights: list,
-    stage1_summary: dict,
+    scan_summary: dict,
     args: argparse.Namespace,
     model: str,
 ) -> str:
@@ -415,12 +401,12 @@ def format_highlight_json(
             }
             for h in highlights
         ],
-        "stage1_summary": stage1_summary,
+        "scan_summary": scan_summary,
     }
     return json.dumps(output, ensure_ascii=False, indent=2)
 
 
-def format_highlight_text(highlights: list, stage1_summary: dict) -> str:
+def format_highlight_text(highlights: list, scan_summary: dict) -> str:
     """Format highlight results as plain text."""
     lines = []
     lines.append("=" * 60)
@@ -428,9 +414,8 @@ def format_highlight_text(highlights: list, stage1_summary: dict) -> str:
     lines.append("=" * 60)
     lines.append("")
     lines.append(
-        f"Stage 1: {stage1_summary.get('total_frames', 0)} frames scanned, "
-        f"{stage1_summary.get('battle_frames', 0)} battle, "
-        f"{stage1_summary.get('candidate_frames', 0)} candidates"
+        f"Scan: {scan_summary.get('total_frames', 0)} frames scanned, "
+        f"{scan_summary.get('battle_frames', 0)} battle frames"
     )
     lines.append("")
 
