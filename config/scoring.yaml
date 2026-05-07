@@ -4,6 +4,6 @@ weights:
   score_gain: 0.0
   special: 0.0
 
-death_penalty: 0.5
+death_penalty: -3
 
 score_gain_window_seconds: 30
