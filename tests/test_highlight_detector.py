@@ -9,7 +9,8 @@ from src.highlight_detector import (
     HighlightSegment,
     _calc_score_gain,
     _compute_score,
-    _frequency_filter,
+    _isotonic_decreasing,
+    _median_smooth,
     _normalize_counts,
     _ScoredFrame,
 )
@@ -159,14 +160,19 @@ class TestScoreFrames:
         detector = HighlightDetector(analyzer=analyzer)
         results = [
             (0.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 80}),
-            (5.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 60}),
+            (5.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 80}),
+            (10.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 80}),
+            (15.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 60}),
+            (20.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 60}),
+            (25.0, {"kills": 5, "assists": 3, "special": 3, "my_team_count": 60}),
         ]
         scored = detector._score_frames(results)
-        assert len(scored) == 2
-        # first frame: future=[60], avg=60, cur=80 -> (80-60)/10+1=3 -> 5*3*3*3=135
-        assert scored[0].score == 135
+        assert len(scored) == 6
+        # first frame: future window covers 60s, avg of 80,80,60,60,60=68
+        # gain = (80-68)/10+1 = 2.2 -> int=2 -> 5*3*2*3=90
+        assert scored[0].score == 90
         # last frame: no future -> score_gain=1 -> 5*3*1*3=45
-        assert scored[1].score == 45
+        assert scored[5].score == 45
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     def test_score_gain_uses_future_window(self, _mock_cfg: MagicMock) -> None:
@@ -454,60 +460,39 @@ class TestDetectFlow:
         assert detector.scan_summary["total_frames"] == 4
 
 
-class TestFrequencyFilter:
-    """Tests for _frequency_filter."""
+class TestMedianSmooth:
+    """Tests for _median_smooth."""
 
     def test_no_outliers_unchanged(self) -> None:
-        """全て支配的レベル付近の値はフィルタされない."""
         values = [100, 95, 100, 90, 100, 95, 100, 90, 100, 95]
-        filtered = _frequency_filter(values)
-        assert filtered == values
+        result = _median_smooth(values)
+        assert all(90 <= v <= 100 for v in result)
 
     def test_isolated_misread_removed(self) -> None:
-        """孤立した誤読は除去される."""
         values = [100, 100, 100, 12, 100, 100, 100, 100, 100, 100]
-        filtered = _frequency_filter(values)
-        assert filtered[3] is None
+        result = _median_smooth(values)
+        assert result[3] == 100
 
     def test_null_values_preserved(self) -> None:
-        """Noneは変更されない."""
         values = [100, None, 100, None, 100, 100, 100, 100, 100, 100]
-        filtered = _frequency_filter(values)
-        assert filtered[1] is None
-        assert filtered[3] is None
-        assert filtered[0] == 100
+        result = _median_smooth(values)
+        assert result[1] is None
+        assert result[3] is None
+        assert result[0] == 100
 
     def test_sustained_decrease_preserved(self) -> None:
-        """持続的な低下は保持される（将来の値も低いまま）."""
         values = [100, 100, 100, 100, 100, 50, 50, 50, 50, 50, 50, 50]
-        filtered = _frequency_filter(values)
-        assert filtered[5] == 50
-        assert filtered[6] == 50
-
-    def test_consecutive_misreads_removed(self) -> None:
-        """4連続の誤読も前後に支配的レベルがあれば除去される."""
-        values = [100, 100, 100, 12, 12, 12, 13, 100, 100, 100, 100, 100, 100, 100]
-        filtered = _frequency_filter(values)
-        assert filtered[3] is None
-        assert filtered[4] is None
-        assert filtered[5] is None
-        assert filtered[6] is None
-
-    def test_scattered_misreads_removed(self) -> None:
-        """散発的な誤読が全て除去される."""
-        values = [100, 100, 100, 12, 100, 100, 100, 13, 100, 100, 100, 100]
-        filtered = _frequency_filter(values)
-        assert filtered[3] is None
-        assert filtered[7] is None
+        result = _median_smooth(values)
+        assert result[7] == 50
+        assert result[8] == 50
 
     def test_small_dataset_unchanged(self) -> None:
-        """5個未満のデータはフィルタしない."""
-        values = [100, 12, 100, 12]
-        filtered = _frequency_filter(values)
-        assert filtered == values
+        values = [100, 12]
+        result = _median_smooth(values)
+        assert len(result) == 2
 
     def test_real_data_pattern(self) -> None:
-        """実データパターン: 前半100、後半80付近、散発的な12/13."""
+        """前半100、後半80付近、散発的な12/13."""
         values = [
             100,
             100,
@@ -530,23 +515,57 @@ class TestFrequencyFilter:
             80,
             80,
         ]
-        filtered = _frequency_filter(values)
-        assert filtered[3] is None
-        assert filtered[11] is None
-        assert filtered[14] == 80
-        assert filtered[0] == 100
+        result = _median_smooth(values)
+        assert result[3] == 100
+        assert result[11] == 100
+        assert result[16] == 80
 
-    def test_edge_misread_at_start(self) -> None:
-        """先頭の誤読は未来方向の確認で除去される."""
-        values = [0, 100, 100, 100, 100, 100, 100, 100, 100, 100]
-        filtered = _frequency_filter(values)
-        assert filtered[0] is None
 
-    def test_values_near_dominant_kept(self) -> None:
-        """支配的レベルとの差がdrop_threshold以内なら保持."""
-        values = [100, 100, 100, 80, 100, 100, 100, 100, 100, 100]
-        filtered = _frequency_filter(values)
-        assert filtered[3] == 80
+class TestIsotonicDecreasing:
+    """Tests for _isotonic_decreasing."""
+
+    def test_already_decreasing(self) -> None:
+        values = [100, 80, 60, 40, 20]
+        result = _isotonic_decreasing(values)
+        assert result == [100, 80, 60, 40, 20]
+
+    def test_violation_merged(self) -> None:
+        values = [100, 50, 80]
+        result = _isotonic_decreasing(values)
+        assert result[0] == 100
+        # 50 and 80 violate monotone decrease, get merged
+        assert result[1] == result[2]
+        assert result[1] == round((50 + 80) / 2)
+
+    def test_all_same(self) -> None:
+        values = [100, 100, 100]
+        result = _isotonic_decreasing(values)
+        assert result == [100, 100, 100]
+
+    def test_single_value(self) -> None:
+        values = [50]
+        result = _isotonic_decreasing(values)
+        assert result == [50]
+
+    def test_all_none(self) -> None:
+        values: list[int | None] = [None, None]
+        result = _isotonic_decreasing(values)
+        assert result == [None, None]
+
+    def test_none_values_skipped(self) -> None:
+        values: list[int | None] = [100, None, 50, None, 20]
+        result = _isotonic_decreasing(values)
+        assert result[0] == 100
+        assert result[1] is None
+        assert result[2] == 50
+        assert result[3] is None
+        assert result[4] == 20
+
+    def test_increasing_sequence_averaged(self) -> None:
+        values = [10, 20, 30, 40, 50]
+        result = _isotonic_decreasing(values)
+        avg = round((10 + 20 + 30 + 40 + 50) / 5)
+        assert all(v == avg for v in result)
 
 
 class TestNormalizeCounts:
@@ -577,23 +596,35 @@ class TestNormalizeCounts:
         assert results[0][1]["enemy_team_count_raw"] == 5
 
     def test_first_value_moderate_kept(self) -> None:
-        results = [(0.0, {"my_team_count": 80, "enemy_team_count": 70})]
+        results = [
+            (0.0, {"my_team_count": 80, "enemy_team_count": 70}),
+            (5.0, {"my_team_count": 80, "enemy_team_count": 70}),
+            (10.0, {"my_team_count": 80, "enemy_team_count": 70}),
+            (15.0, {"my_team_count": 80, "enemy_team_count": 70}),
+            (20.0, {"my_team_count": 80, "enemy_team_count": 70}),
+        ]
         _normalize_counts(results)
         assert results[0][1]["my_team_count"] == 80
         assert results[0][1]["enemy_team_count"] == 70
 
     def test_monotonic_decrease_enforced(self) -> None:
-        """フィルタ後の増加は単調減少制約で抑制される."""
+        """等張回帰により増加は許容されない."""
         results = [
-            (0.0, {"my_team_count": 80, "enemy_team_count": 80}),
-            (5.0, {"my_team_count": 90, "enemy_team_count": 85}),
+            (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (5.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (10.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (15.0, {"my_team_count": 90, "enemy_team_count": 85}),
+            (20.0, {"my_team_count": 80, "enemy_team_count": 80}),
         ]
         _normalize_counts(results)
-        assert results[1][1]["my_team_count"] == 80
-        assert results[1][1]["enemy_team_count"] == 80
+        counts_my = [r["my_team_count"] for _, r in results if isinstance(r, dict)]
+        counts_en = [r["enemy_team_count"] for _, r in results if isinstance(r, dict)]
+        for i in range(1, len(counts_my)):
+            assert counts_my[i] <= counts_my[i - 1], f"my_team not monotone at {i}"
+            assert counts_en[i] <= counts_en[i - 1], f"enemy_team not monotone at {i}"
 
     def test_isolated_misread_corrected(self) -> None:
-        """AIの孤立した誤読は出現頻度フィルタで除去される."""
+        """AIの孤立した誤読はメディアンフィルタで除去される."""
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
             (5.0, {"my_team_count": 100, "enemy_team_count": 100}),
@@ -607,48 +638,56 @@ class TestNormalizeCounts:
         assert results[2][1]["my_team_count_raw"] == 12
 
     def test_consistent_decrease_accepted(self) -> None:
-        """一貫した減少ペースなら正常."""
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
-            (5.0, {"my_team_count": 90, "enemy_team_count": 90}),
-            (10.0, {"my_team_count": 80, "enemy_team_count": 80}),
-            (15.0, {"my_team_count": 70, "enemy_team_count": 70}),
-            (20.0, {"my_team_count": 60, "enemy_team_count": 60}),
+            (5.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (10.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (15.0, {"my_team_count": 90, "enemy_team_count": 90}),
+            (20.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (25.0, {"my_team_count": 70, "enemy_team_count": 70}),
+            (30.0, {"my_team_count": 60, "enemy_team_count": 60}),
+            (35.0, {"my_team_count": 60, "enemy_team_count": 60}),
+            (40.0, {"my_team_count": 60, "enemy_team_count": 60}),
         ]
         _normalize_counts(results)
-        assert results[4][1]["my_team_count"] == 60
-        assert results[4][1]["enemy_team_count"] == 60
+        assert results[6][1]["my_team_count"] == 60
+        assert results[6][1]["enemy_team_count"] == 60
 
     def test_knockout_push_accepted(self) -> None:
-        """連続した大幅減少（ノックアウト推進）は正常と判定される."""
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
-            (5.0, {"my_team_count": 95, "enemy_team_count": 95}),
-            (10.0, {"my_team_count": 90, "enemy_team_count": 90}),
-            (15.0, {"my_team_count": 80, "enemy_team_count": 80}),
-            (20.0, {"my_team_count": 65, "enemy_team_count": 65}),
-            (25.0, {"my_team_count": 45, "enemy_team_count": 45}),
-            (30.0, {"my_team_count": 25, "enemy_team_count": 25}),
-            (35.0, {"my_team_count": 10, "enemy_team_count": 10}),
-            (40.0, {"my_team_count": 0, "enemy_team_count": 0}),
+            (5.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (10.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (15.0, {"my_team_count": 95, "enemy_team_count": 95}),
+            (20.0, {"my_team_count": 90, "enemy_team_count": 90}),
+            (25.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (30.0, {"my_team_count": 65, "enemy_team_count": 65}),
+            (35.0, {"my_team_count": 45, "enemy_team_count": 45}),
+            (40.0, {"my_team_count": 25, "enemy_team_count": 25}),
+            (45.0, {"my_team_count": 10, "enemy_team_count": 10}),
+            (50.0, {"my_team_count": 0, "enemy_team_count": 0}),
+            (55.0, {"my_team_count": 0, "enemy_team_count": 0}),
+            (60.0, {"my_team_count": 0, "enemy_team_count": 0}),
         ]
         _normalize_counts(results)
-        assert results[5][1]["my_team_count"] == 45
-        assert results[6][1]["my_team_count"] == 25
-        assert results[7][1]["my_team_count"] == 10
-        assert results[8][1]["my_team_count"] == 0
+        my_counts = [r["my_team_count"] for _, r in results]
+        for i in range(1, len(my_counts)):
+            assert my_counts[i] <= my_counts[i - 1], f"not monotone at {i}"
+        assert results[7][1]["my_team_count"] <= 50
+        assert results[10][1]["my_team_count"] <= 10
 
     def test_raw_values_preserved(self) -> None:
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
             (5.0, {"my_team_count": 100, "enemy_team_count": 100}),
-            (10.0, {"my_team_count": 120, "enemy_team_count": 88}),
-            (15.0, {"my_team_count": 95, "enemy_team_count": 92}),
-            (20.0, {"my_team_count": 90, "enemy_team_count": 90}),
+            (10.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (15.0, {"my_team_count": 120, "enemy_team_count": 88}),
+            (20.0, {"my_team_count": 95, "enemy_team_count": 92}),
+            (25.0, {"my_team_count": 90, "enemy_team_count": 90}),
         ]
         _normalize_counts(results)
-        assert results[2][1]["my_team_count_raw"] == 120
-        assert results[3][1]["my_team_count_raw"] == 95
+        assert results[3][1]["my_team_count_raw"] == 120
+        assert results[4][1]["my_team_count_raw"] == 95
 
     def test_non_dict_results_skipped(self) -> None:
         results = [
@@ -677,3 +716,15 @@ class TestNormalizeCounts:
         for i in range(10):
             assert results[i][1]["my_team_count"] == 100, f"frame {i}"
             assert results[i][1]["enemy_team_count"] == 100, f"frame {i}"
+
+    def test_real_data_single_misread_no_cascade(self) -> None:
+        """1つの誤読値が全体をカスケード破壊しないことを確認."""
+        results = [
+            (float(i * 5), {"my_team_count": 100, "enemy_team_count": 100}) for i in range(10)
+        ]
+        # 1つだけ低い誤読を挿入
+        results[5] = (25.0, {"my_team_count": 2, "enemy_team_count": 0})
+        _normalize_counts(results)
+        # 誤読後のフレームが誤読値に固定されないこと
+        assert results[6][1]["my_team_count"] >= 50
+        assert results[7][1]["my_team_count"] >= 50
