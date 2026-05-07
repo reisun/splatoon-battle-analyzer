@@ -124,12 +124,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=5.0,
         help="Frame interval in seconds for highlight mode (default: 5)",
     )
-    parser.add_argument(
-        "--threshold",
-        type=int,
-        default=100,
-        help="Score threshold for highlight detection (default: 100)",
-    )
     return parser.parse_args(argv)
 
 
@@ -350,7 +344,6 @@ def _run_highlight_mode(args: argparse.Namespace) -> int:
     detector = HighlightDetector(
         analyzer=analyzer,
         interval=args.highlight_interval,
-        threshold=args.threshold,
     )
 
     video_path = Path(args.input)
