@@ -300,10 +300,10 @@ def run(argv: list[str] | None = None) -> int:
         return 0
 
     if not check_api_key_available():
-        logger.warning("Claude CLI is not available. Use --frames-only or install claude CLI.")
+        logger.warning("Agent Gateway is not available. Use --frames-only or check connectivity.")
         if not args.no_save:
             print(f"\nExtracted {len(frame_paths)} frames to {output_dir}")
-        print("Ensure 'claude' CLI is installed and authenticated.")
+        print("Ensure Agent Gateway is reachable.")
         return 1
 
     # Step 3: Analyze and output timeline
@@ -337,7 +337,7 @@ def run(argv: list[str] | None = None) -> int:
 def _run_highlight_mode(args: argparse.Namespace) -> int:
     """Run highlight detection pipeline."""
     if not check_api_key_available():
-        logger.error("Claude CLI is not available.")
+        logger.error("Agent Gateway is not available.")
         return 1
 
     analyzer = BattleAnalyzer(concurrency=args.concurrency, model=args.model)
