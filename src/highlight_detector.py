@@ -1,7 +1,6 @@
 """Single-pass highlight detection for Splatoon gameplay videos."""
 
 import logging
-from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from pathlib import Path
 
 from src.battle_analyzer import FRAME_ANALYSIS_PROMPT, BattleAnalyzer
 from src.frame_extractor import extract_frames
+from src.scoring_config import ScoringConfig, load_scoring_config
 
 ProgressCallback = Callable[[int, int, int], None]  # (phase, frames_done, frames_total)
 
@@ -16,14 +16,13 @@ logger = logging.getLogger(__name__)
 
 MAX_CLIP_SECONDS = 15
 MAX_TOTAL_SECONDS = 60
-SCORE_GAIN_WINDOW_SECONDS = 40
 
 
-def _calc_score_gain(prev_count: int | None, cur_count: int | None) -> int:
-    """前フレームとのゲームカウント差分から score_gain を計算."""
-    if prev_count is None or cur_count is None:
+def _calc_score_gain(cur_count: int | None, future_avg: int | None) -> int:
+    """現時点と未来平均のゲームカウント差分から score_gain を計算."""
+    if cur_count is None or future_avg is None:
         return 1
-    gain = (prev_count - cur_count) / 10 + 1
+    gain = (cur_count - future_avg) / 10 + 1
     return max(1, min(10, int(gain)))
 
 
@@ -135,16 +134,27 @@ def _normalize_counts(
             prev_normalized = normalized
 
 
-def _compute_score(result: dict) -> int:
-    """4項目の掛け算でスコアを計算。デス中は半減."""
+def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
+    """4項目の重み付き掛け算でスコアを計算。デス中はペナルティ適用."""
+    if cfg is None:
+        cfg = load_scoring_config()
     kills = max(1, min(10, result.get("kills", 1)))
     assists = max(1, min(10, result.get("assists", 1)))
     score_gain = max(1, min(10, result.get("score_gain", 1)))
     special = max(1, min(10, result.get("special", 1)))
-    score = kills * assists * score_gain * special
+    score = (
+        kills
+        * cfg.weights.kills
+        * assists
+        * cfg.weights.assists
+        * score_gain
+        * cfg.weights.score_gain
+        * special
+        * cfg.weights.special
+    )
     if result.get("is_dead", False):
-        score //= 2
-    return score
+        score *= cfg.death_penalty
+    return int(score)
 
 
 @dataclass
@@ -280,23 +290,30 @@ class HighlightDetector:
         return budget_segments
 
     def _score_frames(self, results: list[tuple[float, dict | str]]) -> list[_ScoredFrame]:
+        cfg = load_scoring_config()
         sorted_results = sorted(results, key=lambda x: x[0])
         _normalize_counts(sorted_results)
-        window_size = max(1, int(SCORE_GAIN_WINDOW_SECONDS / self.interval))
-        recent_counts: deque[int] = deque(maxlen=window_size)
+        window_size = max(1, int(cfg.score_gain_window_seconds / self.interval))
+
+        counts: list[int | None] = []
+        for _, result in sorted_results:
+            if isinstance(result, dict):
+                counts.append(result.get("my_team_count"))
+            else:
+                counts.append(None)
+
         scored: list[_ScoredFrame] = []
-        for timestamp, result in sorted_results:
+        for i, (timestamp, result) in enumerate(sorted_results):
             score = 0
             description = ""
             raw: dict = {}
             if isinstance(result, dict):
                 raw = result
-                cur_count = raw.get("my_team_count")
-                avg_prev = int(sum(recent_counts) / len(recent_counts)) if recent_counts else None
-                raw["score_gain"] = _calc_score_gain(avg_prev, cur_count)
-                if cur_count is not None:
-                    recent_counts.append(cur_count)
-                score = _compute_score(raw)
+                cur_count = counts[i]
+                future_slice = [c for c in counts[i + 1 : i + 1 + window_size] if c is not None]
+                future_avg = int(sum(future_slice) / len(future_slice)) if future_slice else None
+                raw["score_gain"] = _calc_score_gain(cur_count, future_avg)
+                score = _compute_score(raw, cfg)
                 description = raw.get("description", "")
             scored.append(_ScoredFrame(timestamp, score, description, raw))
         return scored
