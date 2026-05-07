@@ -48,8 +48,8 @@ class FrameResult(BaseModel):
     special: int
     is_dead: bool
     description: str
-    my_team_color: str
-    enemy_team_color: str
+    my_team_color: str = ""
+    enemy_team_color: str = ""
     my_team_count: int | None
     enemy_team_count: int | None
     my_team_count_raw: int | None
@@ -98,9 +98,9 @@ def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
             score_gain=f.score_gain,
             special=f.special,
             is_dead=f.is_dead,
-            description=f.description,
-            my_team_color=f.my_team_color,
-            enemy_team_color=f.enemy_team_color,
+            description=f.description or "",
+            my_team_color=f.my_team_color or "",
+            enemy_team_color=f.enemy_team_color or "",
             my_team_count=f.my_team_count,
             enemy_team_count=f.enemy_team_count,
             my_team_count_raw=f.my_team_count_raw,
