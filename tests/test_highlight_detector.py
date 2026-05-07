@@ -1,6 +1,5 @@
 """Tests for the highlight detection module."""
 
-import math
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -9,8 +8,8 @@ from src.highlight_detector import (
     HighlightDetector,
     HighlightSegment,
     _calc_score_gain,
-    _compute_iqr_fence,
     _compute_score,
+    _median_filter,
     _normalize_counts,
     _ScoredFrame,
 )
@@ -423,26 +422,53 @@ class TestDetectFlow:
         assert detector.scan_summary["total_frames"] == 4
 
 
-class TestComputeIqrFence:
-    """Tests for _compute_iqr_fence."""
+class TestMedianFilter:
+    """Tests for _median_filter."""
 
-    def test_insufficient_data_returns_inf(self) -> None:
-        assert _compute_iqr_fence([1, 2, 3]) == math.inf
+    def test_no_outliers_unchanged(self) -> None:
+        assert _median_filter([100, 95, 90, 85, 80]) == [100, 95, 90, 85, 80]
 
-    def test_uniform_data(self) -> None:
-        # All same -> Q1=Q3=5, IQR=0, fence=5
-        assert _compute_iqr_fence([5, 5, 5, 5]) == 5.0
+    def test_isolated_spike_removed(self) -> None:
+        values = [100, 100, 100, 12, 100, 100, 100]
+        filtered = _median_filter(values)
+        assert filtered[3] == 100
 
-    def test_spread_data(self) -> None:
-        # [2, 4, 6, 8] sorted. n=4, Q1=sorted[1]=4, Q3=sorted[3]=8
-        # IQR=4, fence=8+1.5*4=14
-        assert _compute_iqr_fence([2, 4, 6, 8]) == 14.0
+    def test_null_values_skipped(self) -> None:
+        values = [100, None, 90, None, 80]
+        filtered = _median_filter(values)
+        assert filtered[0] == 100
+        assert filtered[1] is None
+        assert filtered[2] == 90
+        assert filtered[4] == 80
 
-    def test_larger_dataset(self) -> None:
-        # [1,2,3,4,5,6,7,8] n=8, Q1=sorted[2]=3, Q3=sorted[6]=7
-        # IQR=4, fence=7+6=13
-        data = [1, 2, 3, 4, 5, 6, 7, 8]
-        assert _compute_iqr_fence(data) == 13.0
+    def test_consecutive_trend_preserved(self) -> None:
+        """ノックアウト（連続的な急降下）は保持される."""
+        values = [100, 95, 90, 80, 65, 45, 25, 10, 0]
+        filtered = _median_filter(values)
+        assert filtered[5] == 45
+        assert filtered[6] == 25
+        assert filtered[7] == 10
+        assert filtered[8] == 0
+
+    def test_two_consecutive_outliers_removed(self) -> None:
+        """window_radius=2なので2連続の外れ値も除去される."""
+        values = [100, 100, 12, 13, 100, 100]
+        filtered = _median_filter(values)
+        assert filtered[2] == 100
+        assert filtered[3] == 100
+
+    def test_real_data_pattern(self) -> None:
+        """実データのパターン: 100が多数、散発的に12や13."""
+        values = [100, 100, 100, 12, 100, 100, 100, 13, 100, 100]
+        filtered = _median_filter(values)
+        assert all(v == 100 for v in filtered if v is not None)
+
+    def test_small_differences_kept(self) -> None:
+        """30以内のズレはそのまま保持."""
+        values = [100, 80, 100]
+        filtered = _median_filter(values)
+        # |80-100|=20 < 30 → keep
+        assert filtered[1] == 80
 
 
 class TestNormalizeCounts:
@@ -478,7 +504,8 @@ class TestNormalizeCounts:
         assert results[0][1]["my_team_count"] == 80
         assert results[0][1]["enemy_team_count"] == 70
 
-    def test_increasing_value_treated_as_anomaly(self) -> None:
+    def test_monotonic_decrease_enforced(self) -> None:
+        """中央値フィルタ後の増加は単調減少制約で抑制される."""
         results = [
             (0.0, {"my_team_count": 80, "enemy_team_count": 80}),
             (5.0, {"my_team_count": 90, "enemy_team_count": 85}),
@@ -486,26 +513,20 @@ class TestNormalizeCounts:
         _normalize_counts(results)
         assert results[1][1]["my_team_count"] == 80
         assert results[1][1]["enemy_team_count"] == 80
-        assert results[1][1]["my_team_count_raw"] == 90
 
-    def test_isolated_spike_detected(self) -> None:
-        """安定した推移の中で孤立した急落は異常値として検出される."""
+    def test_isolated_misread_corrected(self) -> None:
+        """AIの孤立した誤読は中央値フィルタで除去される."""
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
-            (5.0, {"my_team_count": 95, "enemy_team_count": 95}),
-            (10.0, {"my_team_count": 90, "enemy_team_count": 90}),
-            (15.0, {"my_team_count": 85, "enemy_team_count": 85}),
-            (20.0, {"my_team_count": 80, "enemy_team_count": 80}),
-            (25.0, {"my_team_count": 75, "enemy_team_count": 75}),
-            (30.0, {"my_team_count": 70, "enemy_team_count": 70}),
-            # 孤立した急落（単発）: deltas=[5,5,5,5,5,5] → IQR=0, fence=5
-            # delta=40 > 5 → フェンス超え & 非連続 → 異常値
-            (35.0, {"my_team_count": 30, "enemy_team_count": 30}),
-            (40.0, {"my_team_count": 65, "enemy_team_count": 65}),
+            (5.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (10.0, {"my_team_count": 12, "enemy_team_count": 0}),
+            (15.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (20.0, {"my_team_count": 100, "enemy_team_count": 100}),
         ]
         _normalize_counts(results)
-        assert results[7][1]["my_team_count"] == 70
-        assert results[7][1]["my_team_count_raw"] == 30
+        assert results[2][1]["my_team_count"] == 100
+        assert results[2][1]["enemy_team_count"] == 100
+        assert results[2][1]["my_team_count_raw"] == 12
 
     def test_consistent_decrease_accepted(self) -> None:
         """一貫した減少ペースなら正常."""
@@ -526,29 +547,30 @@ class TestNormalizeCounts:
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
             (5.0, {"my_team_count": 95, "enemy_team_count": 95}),
             (10.0, {"my_team_count": 90, "enemy_team_count": 90}),
-            (15.0, {"my_team_count": 85, "enemy_team_count": 85}),
-            # ノックアウト推進: 連続して大幅な減少
-            (20.0, {"my_team_count": 55, "enemy_team_count": 55}),
-            (25.0, {"my_team_count": 25, "enemy_team_count": 25}),
-            (30.0, {"my_team_count": 0, "enemy_team_count": 0}),
+            (15.0, {"my_team_count": 80, "enemy_team_count": 80}),
+            (20.0, {"my_team_count": 65, "enemy_team_count": 65}),
+            (25.0, {"my_team_count": 45, "enemy_team_count": 45}),
+            (30.0, {"my_team_count": 25, "enemy_team_count": 25}),
+            (35.0, {"my_team_count": 10, "enemy_team_count": 10}),
+            (40.0, {"my_team_count": 0, "enemy_team_count": 0}),
         ]
         _normalize_counts(results)
-        # 連続(3フレーム)しているため正常扱い
-        assert results[4][1]["my_team_count"] == 55
-        assert results[5][1]["my_team_count"] == 25
-        assert results[6][1]["my_team_count"] == 0
+        assert results[5][1]["my_team_count"] == 45
+        assert results[6][1]["my_team_count"] == 25
+        assert results[7][1]["my_team_count"] == 10
+        assert results[8][1]["my_team_count"] == 0
 
     def test_raw_values_preserved(self) -> None:
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
-            (5.0, {"my_team_count": 95, "enemy_team_count": 92}),
+            (5.0, {"my_team_count": 100, "enemy_team_count": 100}),
             (10.0, {"my_team_count": 120, "enemy_team_count": 88}),
+            (15.0, {"my_team_count": 95, "enemy_team_count": 92}),
+            (20.0, {"my_team_count": 90, "enemy_team_count": 90}),
         ]
         _normalize_counts(results)
-        assert results[0][1]["my_team_count_raw"] == 100
-        assert results[1][1]["my_team_count_raw"] == 95
         assert results[2][1]["my_team_count_raw"] == 120
-        assert results[2][1]["my_team_count"] == 95
+        assert results[3][1]["my_team_count_raw"] == 95
 
     def test_non_dict_results_skipped(self) -> None:
         results = [
@@ -559,31 +581,21 @@ class TestNormalizeCounts:
         assert results[0][1] == "parse error"
         assert results[1][1]["my_team_count"] == 80
 
-    def test_few_data_points_all_accepted(self) -> None:
-        """データが少ない場合はIQR算出不能のため全て正常扱い."""
+    def test_scattered_misreads_all_corrected(self) -> None:
+        """散発的な誤読が全て除去される（実データパターン再現）."""
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
-            (5.0, {"my_team_count": 60, "enemy_team_count": 60}),
+            (5.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (10.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (15.0, {"my_team_count": 12, "enemy_team_count": 100}),
+            (20.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (25.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (30.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (35.0, {"my_team_count": 13, "enemy_team_count": 0}),
+            (40.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (45.0, {"my_team_count": 100, "enemy_team_count": 100}),
         ]
         _normalize_counts(results)
-        # fence=inf → 全減少が正常
-        assert results[1][1]["my_team_count"] == 60
-
-    def test_isolated_anomaly_does_not_affect_neighbors(self) -> None:
-        """孤立した異常値は弾かれ、隣接する正常値はそのまま."""
-        results = [
-            (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
-            (5.0, {"my_team_count": 95, "enemy_team_count": 95}),
-            (10.0, {"my_team_count": 90, "enemy_team_count": 90}),
-            (15.0, {"my_team_count": 85, "enemy_team_count": 85}),
-            (20.0, {"my_team_count": 80, "enemy_team_count": 80}),
-            (25.0, {"my_team_count": 75, "enemy_team_count": 75}),
-            (30.0, {"my_team_count": 70, "enemy_team_count": 70}),
-            # 孤立した急落
-            (35.0, {"my_team_count": 30, "enemy_team_count": 30}),
-            # 正常な減少に戻る
-            (40.0, {"my_team_count": 65, "enemy_team_count": 65}),
-        ]
-        _normalize_counts(results)
-        assert results[7][1]["my_team_count"] == 70
-        assert results[8][1]["my_team_count"] == 65
+        for i in range(10):
+            assert results[i][1]["my_team_count"] == 100, f"frame {i}"
+            assert results[i][1]["enemy_team_count"] == 100, f"frame {i}"
