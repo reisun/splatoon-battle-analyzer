@@ -59,6 +59,8 @@
 
 ```
 splatoon-battle-analyzer/
+  config/
+    scoring.yaml             # スコアリング設定（重み係数、ペナルティ等）
   src/
     __init__.py
     __main__.py              # python -m src エントリポイント
@@ -67,6 +69,7 @@ splatoon-battle-analyzer/
     frame_extractor.py       # フレーム抽出（OpenCV VideoCapture）
     battle_analyzer.py       # Claude Code CLI 呼び出し、プロンプト定義
     highlight_detector.py    # ハイライト検出（スライディングウィンドウ）
+    scoring_config.py        # スコアリング設定ローダー
     api.py                   # FastAPI エンドポイント
     job_store.py             # インメモリジョブストア
   tests/
@@ -133,19 +136,46 @@ Client --> GET /analyze/highlights/jobs/{job_id} --> JobStore --> Status/Result
 
 ### 5.2 スコア計算ロジック
 
-各フレームについて以下の4項目（各1-10）の積を計算する。
+各フレームについて以下の4項目（各1-10）に設定ファイルの重み係数を適用した積を計算する。
 
 ```
-score = kills * assists * score_gain * special
+score = (kills * w_kills) * (assists * w_assists) * (score_gain * w_score_gain) * (special * w_special)
 ```
 
 - `kills`: 敵を倒した度合い（1=なし, 10=大量キル）
 - `assists`: キルアシストの度合い
-- `score_gain`: 自チームスコアの増加度合い
+- `score_gain`: 未来のゲームカウント変動から算出した自チームスコアの増加度合い
 - `special`: スペシャルウェポンの発動/効果
-- `is_dead`: 自プレイヤーがデス中の場合、スコアを半減（`score //= 2`）
+- `is_dead`: 自プレイヤーがデス中の場合、`death_penalty` 係数を乗算
 
-スコアの理論最大値は 10,000（10 * 10 * 10 * 10）。
+重み係数とペナルティは `config/scoring.yaml` で設定する（デプロイ不要で調整可能）。
+
+### 5.2.1 score_gain の計算（未来ベース）
+
+現在のフレームから未来方向のゲームカウントを参照し、今後のスコア変動を予測する。
+
+```
+future_avg = 未来 score_gain_window_seconds 秒分のカウント平均
+gain = (cur_count - future_avg) / 10 + 1
+score_gain = clamp(gain, 1, 10)
+```
+
+未来のカウントが大きく下がる（=チームが大きくスコアを獲得する）場面ほど、その直前のフレームが高スコアになる。
+
+### 5.2.2 スコアリング設定ファイル
+
+`config/scoring.yaml` で以下の項目を設定できる。Docker bind mount（`.:/app`）により、ファイル編集のみで反映される。
+
+```yaml
+weights:
+  kills: 1.5      # kills の重み係数
+  assists: 1.0    # assists の重み係数
+  score_gain: 1.0 # score_gain の重み係数
+  special: 1.0    # special の重み係数
+
+death_penalty: 0.5           # デス中のスコア乗算係数
+score_gain_window_seconds: 30 # 未来参照ウィンドウ（秒）
+```
 
 ### 5.3 スライディングウィンドウによる区間選出
 
@@ -161,6 +191,8 @@ score = kills * assists * score_gain * special
 |------|-----|------|
 | `MAX_CLIP_SECONDS` | 15 | 1クリップの最大秒数 |
 | `MAX_TOTAL_SECONDS` | 60 | 全ハイライトの合計最大秒数 |
+
+設定ファイルで調整可能な値については 5.2.2 を参照。
 
 ## 6. API エンドポイント仕様
 
