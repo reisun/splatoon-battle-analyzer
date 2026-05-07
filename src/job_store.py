@@ -51,9 +51,7 @@ class JobStore:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def update_progress(
-        self, job_id: str, phase: int, frames_done: int, frames_total: int
-    ) -> None:
+    def update_progress(self, job_id: str, phase: int, frames_done: int, frames_total: int) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
             if job:

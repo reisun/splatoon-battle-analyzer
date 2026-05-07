@@ -147,7 +147,8 @@ class TestHighlightDetectorInit:
 class TestScoreFrames:
     """Tests for _score_frames (forward-looking score_gain)."""
 
-    def test_empty(self) -> None:
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    def test_empty(self, _mock_cfg: MagicMock) -> None:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer)
         assert detector._score_frames([]) == []
@@ -306,8 +307,9 @@ class TestSelectWindows:
 class TestDetectFlow:
     """Tests for the full detect() pipeline."""
 
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_no_highlights_returns_empty(self, mock_extract: MagicMock) -> None:
+    def test_no_highlights_returns_empty(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
 
         analyzer = MagicMock()
@@ -326,8 +328,9 @@ class TestDetectFlow:
         assert segments == []
         assert detector.scan_summary["total_frames"] == 3
 
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_full_pipeline(self, mock_extract: MagicMock) -> None:
+    def test_full_pipeline(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 6
         mock_extract.return_value = frames
 
@@ -368,8 +371,9 @@ class TestDetectFlow:
         assert len(segments) == 1
         assert detector.scan_summary["total_frames"] == 6
 
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_progress_callback_called(self, mock_extract: MagicMock) -> None:
+    def test_progress_callback_called(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """Progress callback is invoked for each frame."""
         frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
         mock_extract.return_value = frames
@@ -396,8 +400,9 @@ class TestDetectFlow:
         assert all(c[0] == 1 for c in progress_calls)
         assert all(c[2] == 3 for c in progress_calls)
 
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_parallel_execution(self, mock_extract: MagicMock) -> None:
+    def test_parallel_execution(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """Verify frames are analyzed in parallel via ThreadPoolExecutor."""
         import threading
 
@@ -425,8 +430,9 @@ class TestDetectFlow:
 
         assert len(thread_ids) == 4
 
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_all_low_score_not_highlighted(self, mock_extract: MagicMock) -> None:
+    def test_all_low_score_not_highlighted(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """All-1 scores don't pass threshold."""
         frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
         mock_extract.return_value = frames

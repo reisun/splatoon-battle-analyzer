@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.frame_extractor import extract_frames
@@ -32,7 +31,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         prog="splatoon-battle-analyzer",
-        description="Analyze Splatoon gameplay videos using frame extraction and Ollama Vision API.",
+        description="Analyze Splatoon gameplay videos using frame extraction and Vision API.",
     )
     source_group = parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument(
