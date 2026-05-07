@@ -168,9 +168,9 @@ class FrameAnalysis:
     score_gain: int
     special: int
     is_dead: bool
-    description: str
-    my_team_color: str
-    enemy_team_color: str
+    description: str | None
+    my_team_color: str | None
+    enemy_team_color: str | None
     my_team_count: int | None
     enemy_team_count: int | None
     my_team_count_raw: int | None
