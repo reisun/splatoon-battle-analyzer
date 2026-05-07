@@ -25,9 +25,13 @@ POLL_INTERVAL = 2.0
 MAX_POLL_ATTEMPTS = 900
 
 
+SHARED_TEMP_DIR = os.environ.get("SHARED_TEMP_DIR", "/shared-data/tmp")
+
+
 def _save_temp_frame(frame: np.ndarray) -> str:
-    """Save frame to a temporary JPEG file and return its path."""
-    fd, path = tempfile.mkstemp(suffix=".jpg")
+    """Save frame to a shared temporary JPEG file accessible by Agent Gateway."""
+    os.makedirs(SHARED_TEMP_DIR, exist_ok=True)
+    fd, path = tempfile.mkstemp(suffix=".jpg", dir=SHARED_TEMP_DIR)
     os.close(fd)
     cv2.imwrite(path, frame)
     return path
