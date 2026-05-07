@@ -302,47 +302,44 @@ class HighlightDetector:
         return scored
 
     def _select_windows(self, scored: list[_ScoredFrame]) -> list[HighlightSegment]:
-        """Select best non-overlapping windows by sliding window score sum."""
+        """1区間選定→スコア0化→先頭から再スキャンを繰り返して区間を選出."""
         if not scored:
             return []
 
         window_size = max(1, int(MAX_CLIP_SECONDS / self.interval))
         n = len(scored)
-
-        windows: list[tuple[int, int]] = []
-        for i in range(n - window_size + 1):
-            window = scored[i : i + window_size]
-            total = sum(f.score for f in window)
-            windows.append((i, total))
-
-        windows.sort(key=lambda w: w[1], reverse=True)
-
-        selected: list[int] = []
-        used: set[int] = set()
-        for start_idx, _total in windows:
-            end_idx = min(start_idx + window_size - 1, n - 1)
-            frame_indices = set(range(start_idx, end_idx + 1))
-            if frame_indices & used:
-                continue
-            selected.append(start_idx)
-            used.update(frame_indices)
-
-        selected.sort()
+        max_segments = int(MAX_TOTAL_SECONDS // MAX_CLIP_SECONDS)
+        scores = [f.score for f in scored]
 
         segments: list[HighlightSegment] = []
-        for start_idx in selected:
-            end_idx = min(start_idx + window_size - 1, n - 1)
-            window = scored[start_idx : end_idx + 1]
+        for _ in range(max_segments):
+            best_idx = -1
+            best_total = 0
+            for i in range(n - window_size + 1):
+                total = sum(scores[i : i + window_size])
+                if total > best_total:
+                    best_total = total
+                    best_idx = i
+
+            if best_idx < 0 or best_total <= 0:
+                break
+
+            end_idx = min(best_idx + window_size - 1, n - 1)
+            window = scored[best_idx : end_idx + 1]
             descriptions = [f.description for f in window if f.description]
             segments.append(
                 HighlightSegment(
-                    start_seconds=scored[start_idx].timestamp,
+                    start_seconds=scored[best_idx].timestamp,
                     end_seconds=scored[end_idx].timestamp + self.interval,
-                    peak_intensity=sum(f.score for f in window),
+                    peak_intensity=best_total,
                     description=self._summarize_descriptions(descriptions),
                 )
             )
 
+            for i in range(best_idx, end_idx + 1):
+                scores[i] = 0
+
+        segments.sort(key=lambda s: s.start_seconds)
         return segments
 
     @staticmethod
