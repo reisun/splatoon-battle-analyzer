@@ -1,8 +1,8 @@
 weights:
   kills: 1.5
-  assists: 1.0
-  score_gain: 1.0
-  special: 1.0
+  assists: 0.0
+  score_gain: 0.0
+  special: 0.0
 
 death_penalty: 0.5
 
