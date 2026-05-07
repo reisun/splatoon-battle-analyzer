@@ -9,7 +9,7 @@ from src.highlight_detector import (
     HighlightSegment,
     _calc_score_gain,
     _compute_score,
-    _median_filter,
+    _frequency_filter,
     _normalize_counts,
     _ScoredFrame,
 )
@@ -422,53 +422,99 @@ class TestDetectFlow:
         assert detector.scan_summary["total_frames"] == 4
 
 
-class TestMedianFilter:
-    """Tests for _median_filter."""
+class TestFrequencyFilter:
+    """Tests for _frequency_filter."""
 
     def test_no_outliers_unchanged(self) -> None:
-        assert _median_filter([100, 95, 90, 85, 80]) == [100, 95, 90, 85, 80]
+        """全て支配的レベル付近の値はフィルタされない."""
+        values = [100, 95, 100, 90, 100, 95, 100, 90, 100, 95]
+        filtered = _frequency_filter(values)
+        assert filtered == values
 
-    def test_isolated_spike_removed(self) -> None:
-        values = [100, 100, 100, 12, 100, 100, 100]
-        filtered = _median_filter(values)
-        assert filtered[3] == 100
+    def test_isolated_misread_removed(self) -> None:
+        """孤立した誤読は除去される."""
+        values = [100, 100, 100, 12, 100, 100, 100, 100, 100, 100]
+        filtered = _frequency_filter(values)
+        assert filtered[3] is None
 
-    def test_null_values_skipped(self) -> None:
-        values = [100, None, 90, None, 80]
-        filtered = _median_filter(values)
-        assert filtered[0] == 100
+    def test_null_values_preserved(self) -> None:
+        """Noneは変更されない."""
+        values = [100, None, 100, None, 100, 100, 100, 100, 100, 100]
+        filtered = _frequency_filter(values)
         assert filtered[1] is None
-        assert filtered[2] == 90
-        assert filtered[4] == 80
+        assert filtered[3] is None
+        assert filtered[0] == 100
 
-    def test_consecutive_trend_preserved(self) -> None:
-        """ノックアウト（連続的な急降下）は保持される."""
-        values = [100, 95, 90, 80, 65, 45, 25, 10, 0]
-        filtered = _median_filter(values)
-        assert filtered[5] == 45
-        assert filtered[6] == 25
-        assert filtered[7] == 10
-        assert filtered[8] == 0
+    def test_sustained_decrease_preserved(self) -> None:
+        """持続的な低下は保持される（将来の値も低いまま）."""
+        values = [100, 100, 100, 100, 100, 50, 50, 50, 50, 50, 50, 50]
+        filtered = _frequency_filter(values)
+        assert filtered[5] == 50
+        assert filtered[6] == 50
 
-    def test_two_consecutive_outliers_removed(self) -> None:
-        """window_radius=2なので2連続の外れ値も除去される."""
-        values = [100, 100, 12, 13, 100, 100]
-        filtered = _median_filter(values)
-        assert filtered[2] == 100
-        assert filtered[3] == 100
+    def test_consecutive_misreads_removed(self) -> None:
+        """4連続の誤読も前後に支配的レベルがあれば除去される."""
+        values = [100, 100, 100, 12, 12, 12, 13, 100, 100, 100, 100, 100, 100, 100]
+        filtered = _frequency_filter(values)
+        assert filtered[3] is None
+        assert filtered[4] is None
+        assert filtered[5] is None
+        assert filtered[6] is None
+
+    def test_scattered_misreads_removed(self) -> None:
+        """散発的な誤読が全て除去される."""
+        values = [100, 100, 100, 12, 100, 100, 100, 13, 100, 100, 100, 100]
+        filtered = _frequency_filter(values)
+        assert filtered[3] is None
+        assert filtered[7] is None
+
+    def test_small_dataset_unchanged(self) -> None:
+        """5個未満のデータはフィルタしない."""
+        values = [100, 12, 100, 12]
+        filtered = _frequency_filter(values)
+        assert filtered == values
 
     def test_real_data_pattern(self) -> None:
-        """実データのパターン: 100が多数、散発的に12や13."""
-        values = [100, 100, 100, 12, 100, 100, 100, 13, 100, 100]
-        filtered = _median_filter(values)
-        assert all(v == 100 for v in filtered if v is not None)
+        """実データパターン: 前半100、後半80付近、散発的な12/13."""
+        values = [
+            100,
+            100,
+            100,
+            12,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            13,
+            100,
+            100,
+            80,
+            80,
+            80,
+            80,
+            80,
+            80,
+        ]
+        filtered = _frequency_filter(values)
+        assert filtered[3] is None
+        assert filtered[11] is None
+        assert filtered[14] == 80
+        assert filtered[0] == 100
 
-    def test_small_differences_kept(self) -> None:
-        """30以内のズレはそのまま保持."""
-        values = [100, 80, 100]
-        filtered = _median_filter(values)
-        # |80-100|=20 < 30 → keep
-        assert filtered[1] == 80
+    def test_edge_misread_at_start(self) -> None:
+        """先頭の誤読は未来方向の確認で除去される."""
+        values = [0, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+        filtered = _frequency_filter(values)
+        assert filtered[0] is None
+
+    def test_values_near_dominant_kept(self) -> None:
+        """支配的レベルとの差がdrop_threshold以内なら保持."""
+        values = [100, 100, 100, 80, 100, 100, 100, 100, 100, 100]
+        filtered = _frequency_filter(values)
+        assert filtered[3] == 80
 
 
 class TestNormalizeCounts:
@@ -505,7 +551,7 @@ class TestNormalizeCounts:
         assert results[0][1]["enemy_team_count"] == 70
 
     def test_monotonic_decrease_enforced(self) -> None:
-        """中央値フィルタ後の増加は単調減少制約で抑制される."""
+        """フィルタ後の増加は単調減少制約で抑制される."""
         results = [
             (0.0, {"my_team_count": 80, "enemy_team_count": 80}),
             (5.0, {"my_team_count": 90, "enemy_team_count": 85}),
@@ -515,7 +561,7 @@ class TestNormalizeCounts:
         assert results[1][1]["enemy_team_count"] == 80
 
     def test_isolated_misread_corrected(self) -> None:
-        """AIの孤立した誤読は中央値フィルタで除去される."""
+        """AIの孤立した誤読は出現頻度フィルタで除去される."""
         results = [
             (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
             (5.0, {"my_team_count": 100, "enemy_team_count": 100}),

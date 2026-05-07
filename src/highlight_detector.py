@@ -28,34 +28,63 @@ def _calc_score_gain(prev_count: int | None, cur_count: int | None) -> int:
 
 
 FIRST_VALUE_FLOOR = 50
-MEDIAN_WINDOW_RADIUS = 3
-MEDIAN_THRESHOLD = 40
+LOOK_RANGE = 10
+DROP_THRESHOLD = 50
+BIN_WIDTH = 10
 
 
-def _median_filter(
+def _frequency_filter(
     values: list[int | None],
-    window_radius: int = MEDIAN_WINDOW_RADIUS,
-    threshold: int = MEDIAN_THRESHOLD,
+    look_range: int = LOOK_RANGE,
+    bin_width: int = BIN_WIDTH,
+    drop_threshold: int = DROP_THRESHOLD,
 ) -> list[int | None]:
-    """選択的中央値フィルタで孤立した外れ値のみを除去する.
+    """全データの出現頻度から支配的レベルを決定し、一時的な誤読値を除去する.
 
-    各値の周囲 ±window_radius フレームの中央値を計算し、
-    元の値と中央値の差が threshold を超える場合のみ中央値で置換する。
-    正常な漸減やノックアウト推進は中央値から大きくずれないため保持される。
+    1. 全非null値をビンに分類し、最頻ビンの中心を「支配的レベル」とする
+    2. 支配的レベルから大きく乖離した各値について、前後look_range個の非null値を確認
+    3. 前後の値が支配的レベル付近に戻っている場合、その値は一時的な誤読としてNoneに置換
     """
-    n = len(values)
+    non_null = [(i, v) for i, v in enumerate(values) if v is not None]
+    n_vals = len(non_null)
+    if n_vals < 5:
+        return list(values)
+
+    bins: dict[int, int] = {}
+    for _, v in non_null:
+        b = v // bin_width
+        bins[b] = bins.get(b, 0) + 1
+    dominant_bin = max(bins, key=bins.get)
+    dominant_level = dominant_bin * bin_width + bin_width // 2
+
     result: list[int | None] = list(values)
-    for i in range(n):
-        if values[i] is None:
+
+    for idx in range(n_vals):
+        i, v = non_null[idx]
+
+        if dominant_level - v <= drop_threshold:
             continue
-        neighbors = []
-        for j in range(max(0, i - window_radius), min(n, i + window_radius + 1)):
-            if values[j] is not None:
-                neighbors.append(values[j])
-        neighbors.sort()
-        median = neighbors[len(neighbors) // 2]
-        if abs(values[i] - median) > threshold:
-            result[i] = median
+
+        past = [pv for _, pv in non_null[max(0, idx - look_range) : idx]]
+        future = [fv for _, fv in non_null[idx + 1 : idx + 1 + look_range]]
+
+        past_at_dominant = sum(1 for pv in past if dominant_level - pv <= drop_threshold)
+        future_at_dominant = sum(1 for fv in future if dominant_level - fv <= drop_threshold)
+
+        is_outlier = False
+        if len(past) >= 2 and len(future) >= 2:
+            if past_at_dominant > len(past) * 0.4 and future_at_dominant > len(future) * 0.4:
+                is_outlier = True
+        elif len(past) < 2 and len(future) >= 8:
+            if future_at_dominant > len(future) * 0.75:
+                is_outlier = True
+        elif len(future) < 2 and len(past) >= 8:
+            if past_at_dominant > len(past) * 0.75:
+                is_outlier = True
+
+        if is_outlier:
+            result[i] = None
+
     return result
 
 
@@ -66,7 +95,7 @@ def _normalize_counts(
 
     3ステップ:
     1. 全フレームの raw 値を収集
-    2. 中央値フィルタで孤立した外れ値を除去
+    2. 出現頻度フィルタで一時的な誤読値を除去
     3. 初回値の補正 + 単調減少制約 + null 埋めを適用
     """
     for field in ("my_team_count", "enemy_team_count"):
@@ -81,8 +110,8 @@ def _normalize_counts(
             dict_indices.append(i)
             raw_values.append(result.get(field))
 
-        # Step 2: 中央値フィルタ
-        filtered = _median_filter(raw_values)
+        # Step 2: 出現頻度フィルタ
+        filtered = _frequency_filter(raw_values)
 
         # Step 3: 初回値補正 + 単調減少 + null埋め
         prev_normalized: int | None = None
