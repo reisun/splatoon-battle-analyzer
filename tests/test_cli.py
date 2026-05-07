@@ -479,10 +479,6 @@ class TestHighlightModeArgs:
         args = parse_args(["--input", "v.mp4"])
         assert args.highlight_interval == 5.0
 
-    def test_threshold_default(self) -> None:
-        args = parse_args(["--input", "v.mp4"])
-        assert args.threshold == 100
-
     def test_custom_highlight_args(self) -> None:
         args = parse_args(
             [
@@ -492,12 +488,9 @@ class TestHighlightModeArgs:
                 "highlight",
                 "--highlight-interval",
                 "10",
-                "--threshold",
-                "200",
             ]
         )
         assert args.highlight_interval == 10.0
-        assert args.threshold == 200
 
 
 class TestHighlightFormatting:

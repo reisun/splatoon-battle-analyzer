@@ -27,7 +27,6 @@ class HighlightRequest(BaseModel):
     start: float | None = Field(default=None, description="Start time in seconds")
     end: float | None = Field(default=None, description="End time in seconds")
     interval: float = Field(default=5.0, description="Frame scan interval (seconds)")
-    threshold: int = Field(default=100, description="Score threshold (product of 5 factors)")
     model: str | None = Field(default=None, description="Claude model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
 
@@ -133,7 +132,6 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
     detector = HighlightDetector(
         analyzer=analyzer,
         interval=request.interval,
-        threshold=request.threshold,
     )
 
     try:
@@ -184,7 +182,6 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
         detector = HighlightDetector(
             analyzer=analyzer,
             interval=request.interval,
-            threshold=request.threshold,
         )
 
         def on_progress(phase: int, frames_done: int, frames_total: int) -> None:

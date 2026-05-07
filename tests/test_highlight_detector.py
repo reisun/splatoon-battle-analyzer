@@ -28,28 +28,28 @@ class TestComputeScore:
 
     def test_all_ones(self) -> None:
         result = {"kills": 1, "assists": 1, "score_gain": 1, "special": 1}
-        assert _compute_score(result, _DEFAULT_CFG) == 1
+        assert _compute_score(result, _DEFAULT_CFG) == 4
 
     def test_all_tens(self) -> None:
         result = {"kills": 10, "assists": 10, "score_gain": 10, "special": 10}
-        assert _compute_score(result, _DEFAULT_CFG) == 10000
+        assert _compute_score(result, _DEFAULT_CFG) == 40
 
     def test_mixed_values(self) -> None:
         result = {"kills": 5, "assists": 2, "score_gain": 3, "special": 4}
-        assert _compute_score(result, _DEFAULT_CFG) == 5 * 2 * 3 * 4
+        assert _compute_score(result, _DEFAULT_CFG) == 5 + 2 + 3 + 4
 
     def test_missing_keys_default_to_one(self) -> None:
-        assert _compute_score({}, _DEFAULT_CFG) == 1
+        assert _compute_score({}, _DEFAULT_CFG) == 4
 
     def test_clamps_below_one(self) -> None:
         result = {"kills": 0, "assists": -5, "score_gain": 1, "special": 1}
-        assert _compute_score(result, _DEFAULT_CFG) == 1
+        assert _compute_score(result, _DEFAULT_CFG) == 4
 
     def test_clamps_above_ten(self) -> None:
         result = {"kills": 99, "assists": 1, "score_gain": 1, "special": 1}
-        assert _compute_score(result, _DEFAULT_CFG) == 10
+        assert _compute_score(result, _DEFAULT_CFG) == 13
 
-    def test_is_dead_applies_penalty(self) -> None:
+    def test_is_dead_returns_penalty_only(self) -> None:
         result = {
             "kills": 5,
             "assists": 2,
@@ -57,7 +57,7 @@ class TestComputeScore:
             "special": 4,
             "is_dead": True,
         }
-        assert _compute_score(result, _DEFAULT_CFG) == int(5 * 2 * 3 * 4 * 0.5)
+        assert _compute_score(result, _DEFAULT_CFG) == int(0.5)
 
     def test_is_dead_false_no_penalty(self) -> None:
         result = {
@@ -67,19 +67,19 @@ class TestComputeScore:
             "special": 4,
             "is_dead": False,
         }
-        assert _compute_score(result, _DEFAULT_CFG) == 5 * 2 * 3 * 4
+        assert _compute_score(result, _DEFAULT_CFG) == 5 + 2 + 3 + 4
 
     def test_custom_weights(self) -> None:
         cfg = ScoringConfig(
             weights=ScoringWeights(kills=1.5, assists=1.0, score_gain=1.0, special=1.0),
         )
         result = {"kills": 4, "assists": 2, "score_gain": 3, "special": 2}
-        assert _compute_score(result, cfg) == int(4 * 1.5 * 2 * 3 * 2)
+        assert _compute_score(result, cfg) == int(4 * 1.5 + 2 + 3 + 2)
 
     def test_custom_death_penalty(self) -> None:
-        cfg = ScoringConfig(death_penalty=0.3)
+        cfg = ScoringConfig(death_penalty=3)
         result = {"kills": 10, "assists": 1, "score_gain": 1, "special": 1, "is_dead": True}
-        assert _compute_score(result, cfg) == int(10 * 0.3)
+        assert _compute_score(result, cfg) == 3
 
 
 class TestCalcScoreGain:
@@ -136,13 +136,11 @@ class TestHighlightDetectorInit:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer)
         assert detector.interval == 5
-        assert detector.threshold == 100
 
     def test_custom_params(self) -> None:
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, interval=10, threshold=200)
+        detector = HighlightDetector(analyzer=analyzer, interval=10)
         assert detector.interval == 10
-        assert detector.threshold == 200
 
 
 class TestScoreFrames:
@@ -169,10 +167,10 @@ class TestScoreFrames:
         scored = detector._score_frames(results)
         assert len(scored) == 6
         # first frame: future window covers 60s, avg of 80,80,60,60,60=68
-        # gain = (80-68)/10+1 = 2.2 -> int=2 -> 5*3*2*3=90
-        assert scored[0].score == 90
-        # last frame: no future -> score_gain=1 -> 5*3*1*3=45
-        assert scored[5].score == 45
+        # gain = (80-68)/10+1 = 2.2 -> int=2 -> 5+3+2+3=13
+        assert scored[0].score == 13
+        # last frame: no future -> score_gain=1 -> 5+3+1+3=12
+        assert scored[5].score == 12
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     def test_score_gain_uses_future_window(self, _mock_cfg: MagicMock) -> None:
@@ -227,41 +225,43 @@ class TestSelectWindows:
         detector = HighlightDetector(analyzer=analyzer)
         assert detector._select_windows([]) == []
 
-    def test_all_below_threshold(self) -> None:
+    def test_low_scores_still_selected(self) -> None:
+        """threshold廃止: 低スコアでもウィンドウは選出される."""
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 1, "", {}),
-            _ScoredFrame(5.0, 1, "", {}),
-            _ScoredFrame(10.0, 1, "", {}),
+            _ScoredFrame(0.0, 1, "a", {}),
+            _ScoredFrame(5.0, 1, "b", {}),
+            _ScoredFrame(10.0, 1, "c", {}),
         ]
-        assert detector._select_windows(scored) == []
+        segments = detector._select_windows(scored)
+        assert len(segments) == 1
 
     def test_single_window(self) -> None:
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 135, "a", {}),
-            _ScoredFrame(5.0, 216, "b", {}),
-            _ScoredFrame(10.0, 135, "c", {}),
+            _ScoredFrame(0.0, 10, "a", {}),
+            _ScoredFrame(5.0, 20, "b", {}),
+            _ScoredFrame(10.0, 10, "c", {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 1
         assert segments[0].start_seconds == 0.0
         assert segments[0].end_seconds == 15.0
-        assert segments[0].peak_intensity == 135 + 216 + 135
+        assert segments[0].peak_intensity == 10 + 20 + 10
 
     def test_best_window_selected_by_sum(self) -> None:
-        """Window with highest sum of scores is preferred over peak."""
+        """Window with highest sum of scores is preferred."""
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 500, "spike", {}),
+            _ScoredFrame(0.0, 30, "spike", {}),
             _ScoredFrame(5.0, 1, "", {}),
             _ScoredFrame(10.0, 1, "", {}),
-            _ScoredFrame(15.0, 200, "a", {}),
-            _ScoredFrame(20.0, 200, "b", {}),
-            _ScoredFrame(25.0, 200, "c", {}),
+            _ScoredFrame(15.0, 20, "a", {}),
+            _ScoredFrame(20.0, 20, "b", {}),
+            _ScoredFrame(25.0, 20, "c", {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 2
@@ -269,40 +269,34 @@ class TestSelectWindows:
         assert sums[15.0] > sums[0.0]
 
     def test_non_overlapping(self) -> None:
+        """選出されたウィンドウ同士は重複しない."""
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 200, "a", {}),
-            _ScoredFrame(5.0, 200, "b", {}),
-            _ScoredFrame(10.0, 200, "c", {}),
+            _ScoredFrame(0.0, 20, "a", {}),
+            _ScoredFrame(5.0, 20, "b", {}),
+            _ScoredFrame(10.0, 20, "c", {}),
             _ScoredFrame(15.0, 1, "", {}),
             _ScoredFrame(20.0, 1, "", {}),
             _ScoredFrame(25.0, 1, "", {}),
-            _ScoredFrame(30.0, 150, "d", {}),
-            _ScoredFrame(35.0, 150, "e", {}),
-            _ScoredFrame(40.0, 150, "f", {}),
+            _ScoredFrame(30.0, 15, "d", {}),
+            _ScoredFrame(35.0, 15, "e", {}),
+            _ScoredFrame(40.0, 15, "f", {}),
         ]
         segments = detector._select_windows(scored)
-        assert len(segments) == 2
-        assert segments[0].start_seconds == 0.0
-        assert segments[1].start_seconds == 30.0
-
-    def test_single_high_frame_fallback(self) -> None:
-        """When no full window has a high-score frame, single frames work."""
-        analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
-        scored = [_ScoredFrame(10.0, 200, "action", {})]
-        segments = detector._select_windows(scored)
-        assert len(segments) == 1
-        assert segments[0].start_seconds == 10.0
+        for i in range(len(segments) - 1):
+            assert segments[i].end_seconds <= segments[i + 1].start_seconds
+        starts = [s.start_seconds for s in segments]
+        assert 0.0 in starts
+        assert 30.0 in starts
 
     def test_descriptions_summarized(self) -> None:
         analyzer = MagicMock()
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 200, "first", {}),
-            _ScoredFrame(5.0, 200, "second", {}),
-            _ScoredFrame(10.0, 200, "third", {}),
+            _ScoredFrame(0.0, 20, "first", {}),
+            _ScoredFrame(5.0, 20, "second", {}),
+            _ScoredFrame(10.0, 20, "third", {}),
         ]
         segments = detector._select_windows(scored)
         assert "first" in segments[0].description
@@ -315,7 +309,10 @@ class TestDetectFlow:
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_no_highlights_returns_empty(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+    def test_low_scores_still_produce_segments(
+        self, mock_extract: MagicMock, _mc: MagicMock
+    ) -> None:
+        """threshold廃止: 低スコアでも常にセグメントが返る."""
         mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
 
         analyzer = MagicMock()
@@ -328,10 +325,10 @@ class TestDetectFlow:
             "description": "nothing happening",
         }
 
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
         segments = detector.detect("/fake/video.mp4")
 
-        assert segments == []
+        assert len(segments) >= 1
         assert detector.scan_summary["total_frames"] == 3
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
@@ -371,10 +368,10 @@ class TestDetectFlow:
         analyzer.concurrency = 4
         analyzer.analyze_frame_from_memory_with_prompt.side_effect = mock_analyze
 
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
         segments = detector.detect("/fake/video.mp4")
 
-        assert len(segments) == 1
+        assert len(segments) >= 1
         assert detector.scan_summary["total_frames"] == 6
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
@@ -399,7 +396,7 @@ class TestDetectFlow:
         def on_progress(phase: int, frames_done: int, frames_total: int) -> None:
             progress_calls.append((phase, frames_done, frames_total))
 
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4", progress_callback=on_progress)
 
         assert len(progress_calls) == 3
@@ -431,33 +428,10 @@ class TestDetectFlow:
         analyzer.concurrency = 4
         analyzer.analyze_frame_from_memory_with_prompt.side_effect = mock_analyze
 
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4")
 
         assert len(thread_ids) == 4
-
-    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.extract_frames")
-    def test_all_low_score_not_highlighted(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
-        """All-1 scores don't pass threshold."""
-        frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
-        mock_extract.return_value = frames
-
-        analyzer = MagicMock()
-        analyzer.concurrency = 4
-        analyzer.analyze_frame_from_memory_with_prompt.return_value = {
-            "kills": 1,
-            "assists": 1,
-            "score_gain": 1,
-            "special": 1,
-            "description": "nothing happening",
-        }
-
-        detector = HighlightDetector(analyzer=analyzer, interval=5, threshold=100)
-        segments = detector.detect("/fake/video.mp4")
-
-        assert segments == []
-        assert detector.scan_summary["total_frames"] == 4
 
 
 class TestMedianSmooth:

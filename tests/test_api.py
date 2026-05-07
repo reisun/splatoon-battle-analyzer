@@ -67,7 +67,6 @@ class TestAnalyzeHighlightsEndpoint:
                 "file_path": str(video),
                 "start": 60.0,
                 "end": 180.0,
-                "threshold": 100,
                 "max_highlights": 4,
             },
         )

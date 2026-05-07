@@ -125,26 +125,21 @@ def _normalize_counts(
 
 
 def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
-    """4項目の重み付き掛け算でスコアを計算。デス中はペナルティ適用."""
+    """4項目の重み付き加算でスコアを計算。デス中は係数のみ."""
     if cfg is None:
         cfg = load_scoring_config()
+    if result.get("is_dead", False):
+        return int(cfg.death_penalty)
     kills = max(1, min(10, result.get("kills", 1)))
     assists = max(1, min(10, result.get("assists", 1)))
     score_gain = max(1, min(10, result.get("score_gain", 1)))
     special = max(1, min(10, result.get("special", 1)))
-    score = (
-        kills
-        * cfg.weights.kills
-        * assists
-        * cfg.weights.assists
-        * score_gain
-        * cfg.weights.score_gain
-        * special
-        * cfg.weights.special
+    return int(
+        kills * cfg.weights.kills
+        + assists * cfg.weights.assists
+        + score_gain * cfg.weights.score_gain
+        + special * cfg.weights.special
     )
-    if result.get("is_dead", False):
-        score *= cfg.death_penalty
-    return int(score)
 
 
 @dataclass
@@ -188,11 +183,9 @@ class HighlightDetector:
         self,
         analyzer: BattleAnalyzer,
         interval: float = 5,
-        threshold: int = 100,
     ) -> None:
         self.analyzer = analyzer
         self.interval = interval
-        self.threshold = threshold
         self.scan_summary: dict = {}
         self.all_frames: list[FrameAnalysis] = []
 
@@ -316,27 +309,17 @@ class HighlightDetector:
         window_size = max(1, int(MAX_CLIP_SECONDS / self.interval))
         n = len(scored)
 
-        windows: list[tuple[int, int, int]] = []
+        windows: list[tuple[int, int]] = []
         for i in range(n - window_size + 1):
             window = scored[i : i + window_size]
             total = sum(f.score for f in window)
-            peak = max(f.score for f in window)
-            if peak >= self.threshold:
-                windows.append((i, total, peak))
-
-        if not windows:
-            for i, frame in enumerate(scored):
-                if frame.score >= self.threshold:
-                    windows.append((i, frame.score, frame.score))
-
-        if not windows:
-            return []
+            windows.append((i, total))
 
         windows.sort(key=lambda w: w[1], reverse=True)
 
         selected: list[int] = []
         used: set[int] = set()
-        for start_idx, _total, _peak in windows:
+        for start_idx, _total in windows:
             end_idx = min(start_idx + window_size - 1, n - 1)
             frame_indices = set(range(start_idx, end_idx + 1))
             if frame_indices & used:
