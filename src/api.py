@@ -53,6 +53,7 @@ class FrameResult(BaseModel):
     enemy_team_count: int | None
     my_team_count_raw: int | None
     enemy_team_count_raw: int | None
+    remaining_time: str | None = None
 
 
 class HighlightResponse(BaseModel):
@@ -104,6 +105,7 @@ def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
             enemy_team_count=f.enemy_team_count,
             my_team_count_raw=f.my_team_count_raw,
             enemy_team_count_raw=f.enemy_team_count_raw,
+            remaining_time=f.remaining_time,
         )
         for f in frames
     ]
