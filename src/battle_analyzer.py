@@ -1,24 +1,29 @@
-"""Battle analysis module using Claude Code CLI.
+"""Battle analysis module using Agent Gateway HTTP API.
 
-Sends frame images to Claude Vision via CLI subprocess and extracts battle status.
+Sends frame images to Claude Vision via Agent Gateway and extracts battle status.
 Supports concurrent calls for improved throughput.
 """
 
+import base64
 import json
 import logging
 import os
 import re
-import subprocess
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
 import numpy as np
+import requests
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "haiku"
+DEFAULT_AGENT_GATEWAY_URL = "http://llm-internal-proxy/agent"
+POLL_INTERVAL = 2.0
+MAX_POLL_ATTEMPTS = 900
 
 
 def _save_temp_frame(frame: np.ndarray) -> str:
@@ -75,16 +80,21 @@ def parse_llm_response(text: str) -> dict | str:
         return text
 
 
+def _get_gateway_url() -> str:
+    """Get Agent Gateway base URL from environment."""
+    return os.environ.get("AGENT_GATEWAY_URL", DEFAULT_AGENT_GATEWAY_URL)
+
+
 class BattleAnalyzer:
-    """Analyzes Splatoon battle frames using Claude Code CLI."""
+    """Analyzes Splatoon battle frames using Agent Gateway HTTP API."""
 
     def __init__(self, model: str | None = None, concurrency: int = 4, timeout: int = 120) -> None:
         """Initialize the analyzer.
 
         Args:
             model: Claude model name (default: env CLAUDE_MODEL or "haiku").
-            concurrency: Maximum number of concurrent CLI calls.
-            timeout: Timeout in seconds for each CLI call.
+            concurrency: Maximum number of concurrent API calls.
+            timeout: Timeout in seconds for each API call.
         """
         if model:
             self.model = model
@@ -92,9 +102,10 @@ class BattleAnalyzer:
             self.model = os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
         self.concurrency = concurrency
         self.timeout = timeout
+        self.gateway_url = _get_gateway_url()
 
-    def _call_cli(self, prompt: str, image_path: str) -> str:
-        """Call Claude Code CLI with an image file.
+    def _call_agent_gateway(self, prompt: str, image_path: str) -> str:
+        """Call Agent Gateway API with an image file.
 
         Args:
             prompt: Text prompt to send.
@@ -104,32 +115,78 @@ class BattleAnalyzer:
             Response text from the model.
 
         Raises:
-            RuntimeError: If the CLI call fails.
+            RuntimeError: If the API call fails.
         """
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
         full_prompt = (
-            f"Read the image file at {image_path} and analyze it. "
+            f"Here is a base64-encoded JPEG image:\n{image_data}\n\n"
+            f"Decode and analyze this image. "
             f"Respond with ONLY the requested format, no extra text.\n\n{prompt}"
         )
 
-        result = subprocess.run(
-            [
-                "claude",
-                "-p",
-                full_prompt,
-                "--dangerously-skip-permissions",
-                "--model",
-                self.model,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=self.timeout,
-        )
+        run_url = f"{self.gateway_url}/run"
+        payload = {
+            "agent": "claude",
+            "prompt": full_prompt,
+            "model": self.model,
+            "timeout": self.timeout,
+            "permissions": "readonly",
+        }
 
-        if result.returncode != 0:
-            error_msg = result.stderr.strip() or "Unknown error"
-            raise RuntimeError(f"Claude CLI failed: {error_msg}")
+        try:
+            response = requests.post(run_url, json=payload, timeout=30)
+        except requests.RequestException as e:
+            raise RuntimeError(f"Agent Gateway request failed: {e}")
 
-        return result.stdout.strip()
+        if response.status_code != 202:
+            raise RuntimeError(
+                f"Agent Gateway returned status {response.status_code}: {response.text}"
+            )
+
+        job_data = response.json()
+        job_id = job_data["job_id"]
+
+        return self._poll_job(job_id)
+
+    def _poll_job(self, job_id: str) -> str:
+        """Poll Agent Gateway for job completion.
+
+        Args:
+            job_id: The job ID to poll.
+
+        Returns:
+            Result text from the completed job.
+
+        Raises:
+            RuntimeError: If the job fails or times out.
+        """
+        status_url = f"{self.gateway_url}/jobs/{job_id}"
+
+        for _ in range(MAX_POLL_ATTEMPTS):
+            time.sleep(POLL_INTERVAL)
+
+            try:
+                response = requests.get(status_url, timeout=10)
+            except requests.RequestException as e:
+                raise RuntimeError(f"Agent Gateway poll failed: {e}")
+
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Agent Gateway status check returned {response.status_code}: {response.text}"
+                )
+
+            data = response.json()
+            status = data["status"]
+
+            if status == "done":
+                return data["result"]
+            elif status == "failed":
+                error_msg = data.get("error", "Unknown error")
+                raise RuntimeError(f"Agent Gateway job failed: {error_msg}")
+
+        raise RuntimeError("Agent Gateway job timed out waiting for completion")
 
     def analyze_frame(self, image_path: str | Path) -> dict | str:
         """Analyze a single frame image.
@@ -148,7 +205,7 @@ class BattleAnalyzer:
             raise FileNotFoundError(f"Image file not found: {image_path}")
 
         logger.info("Analyzing frame: %s", image_path.name)
-        result = self._call_cli(FRAME_ANALYSIS_PROMPT, str(image_path.resolve()))
+        result = self._call_agent_gateway(FRAME_ANALYSIS_PROMPT, str(image_path.resolve()))
         logger.info("Analysis complete for: %s", image_path.name)
         return parse_llm_response(result)
 
@@ -165,7 +222,7 @@ class BattleAnalyzer:
         tmp_path = _save_temp_frame(frame)
         try:
             logger.info("Analyzing frame at %s", timestamp)
-            result = self._call_cli(FRAME_ANALYSIS_PROMPT, tmp_path)
+            result = self._call_agent_gateway(FRAME_ANALYSIS_PROMPT, tmp_path)
             logger.info("Analysis complete for frame at %s", timestamp)
             return parse_llm_response(result)
         finally:
@@ -187,7 +244,7 @@ class BattleAnalyzer:
         tmp_path = _save_temp_frame(frame)
         try:
             logger.info("Analyzing frame at %s with custom prompt", timestamp)
-            result = self._call_cli(prompt, tmp_path)
+            result = self._call_agent_gateway(prompt, tmp_path)
             logger.info("Analysis complete for frame at %s", timestamp)
             return parse_llm_response(result)
         finally:
@@ -227,18 +284,16 @@ class BattleAnalyzer:
 
 
 def check_api_key_available() -> bool:
-    """Check if Claude Code CLI is available and authenticated.
+    """Check if Agent Gateway is available.
 
     Returns:
-        True if CLI is available, False otherwise.
+        True if Agent Gateway is reachable, False otherwise.
     """
+    gateway_url = _get_gateway_url()
+    health_url = gateway_url.rsplit("/agent", 1)[0] + "/health"
+
     try:
-        result = subprocess.run(
-            ["claude", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+        response = requests.get(health_url, timeout=5)
+        return response.status_code == 200
+    except requests.RequestException:
         return False

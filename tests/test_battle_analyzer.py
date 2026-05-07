@@ -1,12 +1,12 @@
 """Tests for the battle analysis module."""
 
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import cv2
 import numpy as np
 import pytest
+import requests
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available, parse_llm_response
 
@@ -85,20 +85,30 @@ class TestBattleAnalyzer:
         with pytest.raises(FileNotFoundError, match="Image file not found"):
             analyzer.analyze_frame("/nonexistent/frame.jpg")
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_analyze_frame_success(self, mock_run: MagicMock, tmp_path: Path) -> None:
+    @patch("src.battle_analyzer.requests.get")
+    @patch("src.battle_analyzer.requests.post")
+    @patch("src.battle_analyzer.time.sleep")
+    def test_analyze_frame_success(
+        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
+    ) -> None:
         """Successfully analyze a frame image."""
         image_file = tmp_path / "frame_00m10s.jpg"
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         _, buf = cv2.imencode(".jpg", img)
         image_file.write_bytes(buf.tobytes())
 
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout='{"game_mode": "ナワバリバトル", "highlight_score": 5}',
-            stderr="",
-        )
+        mock_post_response = MagicMock()
+        mock_post_response.status_code = 202
+        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
+        mock_post.return_value = mock_post_response
+
+        mock_get_response = MagicMock()
+        mock_get_response.status_code = 200
+        mock_get_response.json.return_value = {
+            "status": "done",
+            "result": '{"game_mode": "ナワバリバトル", "highlight_score": 5}',
+        }
+        mock_get.return_value = mock_get_response
 
         analyzer = BattleAnalyzer(model="haiku")
         result = analyzer.analyze_frame(image_file)
@@ -106,16 +116,18 @@ class TestBattleAnalyzer:
         assert isinstance(result, dict)
         assert result["game_mode"] == "ナワバリバトル"
         assert result["highlight_score"] == 5
-        mock_run.assert_called_once()
+        mock_post.assert_called_once()
 
-        call_args = mock_run.call_args[0][0]
-        assert "claude" in call_args
-        assert "--model" in call_args
-        assert "haiku" in call_args
+        call_kwargs = mock_post.call_args
+        payload = call_kwargs[1]["json"]
+        assert payload["agent"] == "claude"
+        assert payload["model"] == "haiku"
 
-    @patch("src.battle_analyzer.subprocess.run")
+    @patch("src.battle_analyzer.requests.get")
+    @patch("src.battle_analyzer.requests.post")
+    @patch("src.battle_analyzer.time.sleep")
     def test_analyze_frame_returns_raw_on_parse_failure(
-        self, mock_run: MagicMock, tmp_path: Path
+        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
     ) -> None:
         """Return raw string when LLM response is not valid JSON."""
         image_file = tmp_path / "frame_00m10s.jpg"
@@ -123,12 +135,18 @@ class TestBattleAnalyzer:
         _, buf = cv2.imencode(".jpg", img)
         image_file.write_bytes(buf.tobytes())
 
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="I cannot analyze this image clearly.",
-            stderr="",
-        )
+        mock_post_response = MagicMock()
+        mock_post_response.status_code = 202
+        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
+        mock_post.return_value = mock_post_response
+
+        mock_get_response = MagicMock()
+        mock_get_response.status_code = 200
+        mock_get_response.json.return_value = {
+            "status": "done",
+            "result": "I cannot analyze this image clearly.",
+        }
+        mock_get.return_value = mock_get_response
 
         analyzer = BattleAnalyzer(model="haiku")
         result = analyzer.analyze_frame(image_file)
@@ -136,46 +154,87 @@ class TestBattleAnalyzer:
         assert isinstance(result, str)
         assert "cannot analyze" in result
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_analyze_frame_cli_error(self, mock_run: MagicMock, tmp_path: Path) -> None:
-        """Raise RuntimeError when CLI fails."""
+    @patch("src.battle_analyzer.requests.post")
+    def test_analyze_frame_gateway_error(self, mock_post: MagicMock, tmp_path: Path) -> None:
+        """Raise RuntimeError when Agent Gateway returns error."""
         image_file = tmp_path / "frame_00m10s.jpg"
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         _, buf = cv2.imencode(".jpg", img)
         image_file.write_bytes(buf.tobytes())
 
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout="",
-            stderr="Authentication failed",
-        )
+        mock_post_response = MagicMock()
+        mock_post_response.status_code = 500
+        mock_post_response.text = "Internal Server Error"
+        mock_post.return_value = mock_post_response
 
         analyzer = BattleAnalyzer(model="haiku")
-        with pytest.raises(RuntimeError, match="Claude CLI failed"):
+        with pytest.raises(RuntimeError, match="Agent Gateway returned status 500"):
             analyzer.analyze_frame(image_file)
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_analyze_frame_from_memory(self, mock_run: MagicMock) -> None:
+    @patch("src.battle_analyzer.requests.get")
+    @patch("src.battle_analyzer.requests.post")
+    @patch("src.battle_analyzer.time.sleep")
+    def test_analyze_frame_job_failed(
+        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
+    ) -> None:
+        """Raise RuntimeError when job fails."""
+        image_file = tmp_path / "frame_00m10s.jpg"
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        _, buf = cv2.imencode(".jpg", img)
+        image_file.write_bytes(buf.tobytes())
+
+        mock_post_response = MagicMock()
+        mock_post_response.status_code = 202
+        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
+        mock_post.return_value = mock_post_response
+
+        mock_get_response = MagicMock()
+        mock_get_response.status_code = 200
+        mock_get_response.json.return_value = {
+            "status": "failed",
+            "error": "Authentication failed",
+        }
+        mock_get.return_value = mock_get_response
+
+        analyzer = BattleAnalyzer(model="haiku")
+        with pytest.raises(RuntimeError, match="Agent Gateway job failed"):
+            analyzer.analyze_frame(image_file)
+
+    @patch("src.battle_analyzer.requests.get")
+    @patch("src.battle_analyzer.requests.post")
+    @patch("src.battle_analyzer.time.sleep")
+    def test_analyze_frame_from_memory(
+        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
         """Analyze a frame from memory (numpy array)."""
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
 
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout='{"game_mode": "不明", "highlight_score": 1}',
-            stderr="",
-        )
+        mock_post_response = MagicMock()
+        mock_post_response.status_code = 202
+        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
+        mock_post.return_value = mock_post_response
+
+        mock_get_response = MagicMock()
+        mock_get_response.status_code = 200
+        mock_get_response.json.return_value = {
+            "status": "done",
+            "result": '{"game_mode": "不明", "highlight_score": 1}',
+        }
+        mock_get.return_value = mock_get_response
 
         analyzer = BattleAnalyzer(model="haiku")
         result = analyzer.analyze_frame_from_memory(frame, "01m30s")
 
         assert isinstance(result, dict)
         assert result["game_mode"] == "不明"
-        mock_run.assert_called_once()
+        mock_post.assert_called_once()
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_analyze_frames_multiple(self, mock_run: MagicMock, tmp_path: Path) -> None:
+    @patch("src.battle_analyzer.requests.get")
+    @patch("src.battle_analyzer.requests.post")
+    @patch("src.battle_analyzer.time.sleep")
+    def test_analyze_frames_multiple(
+        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
+    ) -> None:
         """Analyze multiple frames and return structured results."""
         paths = []
         for name in ["frame_00m00s.jpg", "frame_00m10s.jpg", "frame_00m20s.jpg"]:
@@ -185,12 +244,18 @@ class TestBattleAnalyzer:
             p.write_bytes(buf.tobytes())
             paths.append(p)
 
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout='{"game_mode": "ナワバリバトル"}',
-            stderr="",
-        )
+        mock_post_response = MagicMock()
+        mock_post_response.status_code = 202
+        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
+        mock_post.return_value = mock_post_response
+
+        mock_get_response = MagicMock()
+        mock_get_response.status_code = 200
+        mock_get_response.json.return_value = {
+            "status": "done",
+            "result": '{"game_mode": "ナワバリバトル"}',
+        }
+        mock_get.return_value = mock_get_response
 
         analyzer = BattleAnalyzer(model="haiku", concurrency=1)
         results = analyzer.analyze_frames(paths)
@@ -201,8 +266,8 @@ class TestBattleAnalyzer:
         assert results[2]["timestamp"] == "00m20s"
         assert all(isinstance(r["analysis"], dict) for r in results)
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_analyze_frames_handles_error(self, mock_run: MagicMock, tmp_path: Path) -> None:
+    @patch("src.battle_analyzer.requests.post")
+    def test_analyze_frames_handles_error(self, mock_post: MagicMock, tmp_path: Path) -> None:
         """Handle analysis errors gracefully for individual frames."""
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         _, buf = cv2.imencode(".jpg", img)
@@ -213,24 +278,24 @@ class TestBattleAnalyzer:
         bad_frame = tmp_path / "frame_00m10s.jpg"
         bad_frame.write_bytes(buf.tobytes())
 
-        good_result = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout='{"game_mode": "不明"}', stderr=""
-        )
-        bad_result = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="API error"
-        )
-
-        mock_run.side_effect = [good_result, bad_result]
+        mock_post_response = MagicMock()
+        mock_post_response.status_code = 500
+        mock_post_response.text = "Internal Server Error"
+        mock_post.return_value = mock_post_response
 
         analyzer = BattleAnalyzer(model="haiku", concurrency=1)
         results = analyzer.analyze_frames([good_frame, bad_frame])
 
         assert len(results) == 2
-        assert isinstance(results[0]["analysis"], dict)
+        assert "[Error]" in results[0]["analysis"]
         assert "[Error]" in results[1]["analysis"]
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_analyze_frames_preserves_order(self, mock_run: MagicMock, tmp_path: Path) -> None:
+    @patch("src.battle_analyzer.requests.get")
+    @patch("src.battle_analyzer.requests.post")
+    @patch("src.battle_analyzer.time.sleep")
+    def test_analyze_frames_preserves_order(
+        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
+    ) -> None:
         """Results are returned in the same order as input paths."""
         paths = []
         for name in ["frame_00m00s.jpg", "frame_00m10s.jpg", "frame_00m20s.jpg"]:
@@ -242,13 +307,25 @@ class TestBattleAnalyzer:
 
         call_count = [0]
 
-        def mock_run_fn(*args, **kwargs):
+        def mock_post_fn(*args, **kwargs):
             call_count[0] += 1
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=f'{{"result": {call_count[0]}}}', stderr=""
-            )
+            resp = MagicMock()
+            resp.status_code = 202
+            resp.json.return_value = {"job_id": f"job-{call_count[0]}", "status": "queued"}
+            return resp
 
-        mock_run.side_effect = mock_run_fn
+        mock_post.side_effect = mock_post_fn
+
+        def mock_get_fn(*args, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {
+                "status": "done",
+                "result": f'{{"result": {call_count[0]}}}',
+            }
+            return resp
+
+        mock_get.side_effect = mock_get_fn
 
         analyzer = BattleAnalyzer(model="haiku", concurrency=1)
         results = analyzer.analyze_frames(paths)
@@ -262,30 +339,30 @@ class TestBattleAnalyzer:
 class TestCheckApiKeyAvailable:
     """Tests for check_api_key_available function."""
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_cli_available(self, mock_run: MagicMock) -> None:
-        """Return True when Claude CLI is available."""
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="1.0.0", stderr=""
-        )
+    @patch("src.battle_analyzer.requests.get")
+    def test_gateway_available(self, mock_get: MagicMock) -> None:
+        """Return True when Agent Gateway is available."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_get.return_value = mock_response
         assert check_api_key_available() is True
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_cli_not_found(self, mock_run: MagicMock) -> None:
-        """Return False when Claude CLI is not installed."""
-        mock_run.side_effect = FileNotFoundError("No such file")
+    @patch("src.battle_analyzer.requests.get")
+    def test_gateway_not_reachable(self, mock_get: MagicMock) -> None:
+        """Return False when Agent Gateway is not reachable."""
+        mock_get.side_effect = requests.ConnectionError("Connection refused")
         assert check_api_key_available() is False
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_cli_timeout(self, mock_run: MagicMock) -> None:
-        """Return False when CLI times out."""
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=10)
+    @patch("src.battle_analyzer.requests.get")
+    def test_gateway_timeout(self, mock_get: MagicMock) -> None:
+        """Return False when health check times out."""
+        mock_get.side_effect = requests.Timeout("Request timed out")
         assert check_api_key_available() is False
 
-    @patch("src.battle_analyzer.subprocess.run")
-    def test_cli_error(self, mock_run: MagicMock) -> None:
-        """Return False when CLI returns non-zero exit code."""
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="error"
-        )
+    @patch("src.battle_analyzer.requests.get")
+    def test_gateway_error_status(self, mock_get: MagicMock) -> None:
+        """Return False when gateway returns non-200 status."""
+        mock_response = MagicMock()
+        mock_response.status_code = 503
+        mock_get.return_value = mock_response
         assert check_api_key_available() is False
