@@ -4,7 +4,6 @@ Sends frame images to Claude Vision via Agent Gateway and extracts battle status
 Supports concurrent calls for improved throughput.
 """
 
-import base64
 import json
 import logging
 import os
@@ -117,22 +116,13 @@ class BattleAnalyzer:
         Raises:
             RuntimeError: If the API call fails.
         """
-        with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
-
-        full_prompt = (
-            f"Here is a base64-encoded JPEG image:\n{image_data}\n\n"
-            f"Decode and analyze this image. "
-            f"Respond with ONLY the requested format, no extra text.\n\n{prompt}"
-        )
-
         run_url = f"{self.gateway_url}/run"
         payload = {
             "agent": "claude",
-            "prompt": full_prompt,
+            "prompt": prompt,
             "model": self.model,
             "timeout": self.timeout,
-            "permissions": "readonly",
+            "image_path": image_path,
         }
 
         try:
