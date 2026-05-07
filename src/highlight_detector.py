@@ -27,63 +27,57 @@ def _calc_score_gain(cur_count: int | None, future_avg: int | None) -> int:
 
 
 FIRST_VALUE_FLOOR = 50
-LOOK_RANGE = 10
-DROP_THRESHOLD = 50
-BIN_WIDTH = 10
+MEDIAN_RADIUS = 2
 
 
-def _frequency_filter(
-    values: list[int | None],
-    look_range: int = LOOK_RANGE,
-    bin_width: int = BIN_WIDTH,
-    drop_threshold: int = DROP_THRESHOLD,
+def _median_smooth(
+    values: list[int | None], radius: int = MEDIAN_RADIUS
 ) -> list[int | None]:
-    """全データの出現頻度から支配的レベルを決定し、一時的な誤読値を除去する.
+    """スライディングウィンドウのメディアンで外れ値を平滑化する.
 
-    1. 全非null値をビンに分類し、最頻ビンの中心を「支配的レベル」とする
-    2. 支配的レベルから大きく乖離した各値について、前後look_range個の非null値を確認
-    3. 前後の値が支配的レベル付近に戻っている場合、その値は一時的な誤読としてNoneに置換
+    None値はスキップ（出力もNone）。各位置で前後radius個の範囲内の
+    非null値からメディアンを計算して置換する。
+    """
+    n = len(values)
+    result: list[int | None] = list(values)
+    for i in range(n):
+        if values[i] is None:
+            continue
+        window: list[int] = []
+        for j in range(max(0, i - radius), min(n, i + radius + 1)):
+            if values[j] is not None:
+                window.append(values[j])
+        window.sort()
+        result[i] = window[len(window) // 2]
+    return result
+
+
+def _isotonic_decreasing(values: list[int | None]) -> list[int | None]:
+    """PAVアルゴリズムによる単調非増加回帰（L2最適）.
+
+    None値はスキップし、非null値に対してのみ回帰を適用。
+    ブロック結合時に加重平均を使用し、全体として二乗誤差最小の
+    単調非増加系列を返す。
     """
     non_null = [(i, v) for i, v in enumerate(values) if v is not None]
-    n_vals = len(non_null)
-    if n_vals < 5:
+    if not non_null:
         return list(values)
 
-    bins: dict[int, int] = {}
-    for _, v in non_null:
-        b = v // bin_width
-        bins[b] = bins.get(b, 0) + 1
-    dominant_bin = max(bins, key=bins.get)
-    dominant_level = dominant_bin * bin_width + bin_width // 2
+    blocks: list[tuple[float, int, list[int]]] = []
+    for idx, val in non_null:
+        blocks.append((float(val), 1, [idx]))
+        while len(blocks) >= 2:
+            if blocks[-1][0] / blocks[-1][1] <= blocks[-2][0] / blocks[-2][1]:
+                break
+            s1, c1, i1 = blocks.pop()
+            s2, c2, i2 = blocks.pop()
+            blocks.append((s1 + s2, c1 + c2, i2 + i1))
 
     result: list[int | None] = list(values)
-
-    for idx in range(n_vals):
-        i, v = non_null[idx]
-
-        if dominant_level - v <= drop_threshold:
-            continue
-
-        past = [pv for _, pv in non_null[max(0, idx - look_range) : idx]]
-        future = [fv for _, fv in non_null[idx + 1 : idx + 1 + look_range]]
-
-        past_at_dominant = sum(1 for pv in past if dominant_level - pv <= drop_threshold)
-        future_at_dominant = sum(1 for fv in future if dominant_level - fv <= drop_threshold)
-
-        is_outlier = False
-        if len(past) >= 2 and len(future) >= 2:
-            if past_at_dominant > len(past) * 0.4 and future_at_dominant > len(future) * 0.4:
-                is_outlier = True
-        elif len(past) < 2 and len(future) >= 8:
-            if future_at_dominant > len(future) * 0.75:
-                is_outlier = True
-        elif len(future) < 2 and len(past) >= 8:
-            if past_at_dominant > len(past) * 0.75:
-                is_outlier = True
-
-        if is_outlier:
-            result[i] = None
-
+    for total, count, indices in blocks:
+        fitted = int(round(total / count))
+        for i in indices:
+            result[i] = fitted
     return result
 
 
@@ -94,13 +88,12 @@ def _normalize_counts(
 
     3ステップ:
     1. 全フレームの raw 値を収集
-    2. 出現頻度フィルタで一時的な誤読値を除去
-    3. 初回値の補正 + 単調減少制約 + null 埋めを適用
+    2. メディアンフィルタで外れ値を平滑化
+    3. 先頭値補正 + PAV等張回帰で単調非増加を保証 + null埋め
     """
     for field in ("my_team_count", "enemy_team_count"):
         raw_field = f"{field}_raw"
 
-        # Step 1: raw値を収集
         dict_indices: list[int] = []
         raw_values: list[int | None] = []
         for i, (_ts, result) in enumerate(results):
@@ -109,29 +102,26 @@ def _normalize_counts(
             dict_indices.append(i)
             raw_values.append(result.get(field))
 
-        # Step 2: 出現頻度フィルタ
-        filtered = _frequency_filter(raw_values)
+        smoothed = _median_smooth(raw_values)
 
-        # Step 3: 初回値補正 + 単調減少 + null埋め
-        prev_normalized: int | None = None
+        for k, v in enumerate(smoothed):
+            if v is not None:
+                if v < FIRST_VALUE_FLOOR:
+                    smoothed[k] = 100
+                break
+
+        fitted = _isotonic_decreasing(smoothed)
+
+        prev_val: int | None = None
         for seq_idx, di in enumerate(dict_indices):
             result = results[di][1]
-            result[raw_field] = raw_values[seq_idx]  # type: ignore[union-attr]
-            val = filtered[seq_idx]
-
-            if val is None:
-                result[field] = prev_normalized  # type: ignore[union-attr]
-                continue
-
-            if prev_normalized is None:
-                normalized = 100 if val < FIRST_VALUE_FLOOR else val
-            elif val > prev_normalized:
-                normalized = prev_normalized
+            result[raw_field] = raw_values[seq_idx]
+            val = fitted[seq_idx]
+            if val is not None:
+                prev_val = val
+                result[field] = val
             else:
-                normalized = val
-
-            result[field] = normalized  # type: ignore[union-attr]
-            prev_normalized = normalized
+                result[field] = prev_val
 
 
 def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
