@@ -1,7 +1,6 @@
 """Single-pass highlight detection for Splatoon gameplay videos."""
 
 import logging
-import math
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,23 +28,35 @@ def _calc_score_gain(prev_count: int | None, cur_count: int | None) -> int:
 
 
 FIRST_VALUE_FLOOR = 50
-IQR_MULTIPLIER = 1.5
-CONSECUTIVE_RUN_MIN = 2
+MEDIAN_WINDOW_RADIUS = 3
+MEDIAN_THRESHOLD = 40
 
 
-def _compute_iqr_fence(deltas: list[float]) -> float:
-    """減少幅リストの IQR 上限フェンスを算出する.
+def _median_filter(
+    values: list[int | None],
+    window_radius: int = MEDIAN_WINDOW_RADIUS,
+    threshold: int = MEDIAN_THRESHOLD,
+) -> list[int | None]:
+    """選択的中央値フィルタで孤立した外れ値のみを除去する.
 
-    Q3 + 1.5 * IQR を返す。データが不足の場合は inf を返す（全て正常扱い）。
+    各値の周囲 ±window_radius フレームの中央値を計算し、
+    元の値と中央値の差が threshold を超える場合のみ中央値で置換する。
+    正常な漸減やノックアウト推進は中央値から大きくずれないため保持される。
     """
-    if len(deltas) < 4:
-        return math.inf
-    sorted_d = sorted(deltas)
-    n = len(sorted_d)
-    q1 = sorted_d[n // 4]
-    q3 = sorted_d[(3 * n) // 4]
-    iqr = q3 - q1
-    return q3 + IQR_MULTIPLIER * iqr
+    n = len(values)
+    result: list[int | None] = list(values)
+    for i in range(n):
+        if values[i] is None:
+            continue
+        neighbors = []
+        for j in range(max(0, i - window_radius), min(n, i + window_radius + 1)):
+            if values[j] is not None:
+                neighbors.append(values[j])
+        neighbors.sort()
+        median = neighbors[len(neighbors) // 2]
+        if abs(values[i] - median) > threshold:
+            result[i] = median
+    return result
 
 
 def _normalize_counts(
@@ -53,90 +64,46 @@ def _normalize_counts(
 ) -> None:
     """ゲームカウントを正規化し、raw値と正規化値の両方をdictに格納する.
 
-    2パスアプローチ:
-    Pass 1: raw値から隣接フレーム間の減少幅を全て収集し、IQR で外れ値閾値を算出
-    Pass 2: 閾値を超える減少でも連続(2フレーム以上)している場合は正常と判定
-            孤立した単発の急落のみ異常値として直前値で置換
+    3ステップ:
+    1. 全フレームの raw 値を収集
+    2. 中央値フィルタで孤立した外れ値を除去
+    3. 初回値の補正 + 単調減少制約 + null 埋めを適用
     """
     for field in ("my_team_count", "enemy_team_count"):
         raw_field = f"{field}_raw"
 
-        # --- Pass 1: raw値を収集し、隣接間の減少幅からIQRフェンスを算出 ---
-        raw_values: list[tuple[int, int]] = []  # (index, value)
+        # Step 1: raw値を収集
         dict_indices: list[int] = []
+        raw_values: list[int | None] = []
         for i, (_ts, result) in enumerate(results):
             if not isinstance(result, dict):
                 continue
             dict_indices.append(i)
-            val = result.get(field)
-            if val is not None:
-                raw_values.append((i, val))
+            raw_values.append(result.get(field))
 
-        deltas: list[float] = []
-        for j in range(1, len(raw_values)):
-            prev_val = raw_values[j - 1][1]
-            cur_val = raw_values[j][1]
-            if cur_val < prev_val:
-                deltas.append(prev_val - cur_val)
+        # Step 2: 中央値フィルタ
+        filtered = _median_filter(raw_values)
 
-        fence = _compute_iqr_fence(deltas)
-
-        # --- Pass 2: 正規化適用 ---
-        # まず各フレームの「フェンス超え減少」フラグを計算
-        raw_sequence: list[tuple[int, int | None]] = []
-        for i in dict_indices:
-            val = results[i][1].get(field)  # type: ignore[union-attr]
-            raw_sequence.append((i, val))
-
-        # 隣接減少幅がフェンスを超えるインデックスを特定
-        large_drop_indices: set[int] = set()
-        prev_val_for_flag: int | None = None
-        for seq_idx, (_, val) in enumerate(raw_sequence):
-            if val is None:
-                continue
-            if prev_val_for_flag is not None and val < prev_val_for_flag:
-                delta = prev_val_for_flag - val
-                if delta > fence:
-                    large_drop_indices.add(seq_idx)
-            prev_val_for_flag = val
-
-        # 連続するフェンス超えを正常と判定するためのセット構築
-        sustained_indices: set[int] = set()
-        sorted_large = sorted(large_drop_indices)
-        run_start = 0
-        for k in range(1, len(sorted_large) + 1):
-            if k == len(sorted_large) or sorted_large[k] - sorted_large[k - 1] > 1:
-                run_length = k - run_start
-                if run_length >= CONSECUTIVE_RUN_MIN:
-                    for m in range(run_start, k):
-                        sustained_indices.add(sorted_large[m])
-                run_start = k
-
-        # 最終的な正規化
+        # Step 3: 初回値補正 + 単調減少 + null埋め
         prev_normalized: int | None = None
-        prev_raw: int | None = None
-        for seq_idx, (i, _) in enumerate(raw_sequence):
-            result = results[i][1]
-            raw_value = result.get(field)  # type: ignore[union-attr]
-            result[raw_field] = raw_value  # type: ignore[union-attr]
+        for seq_idx, di in enumerate(dict_indices):
+            result = results[di][1]
+            result[raw_field] = raw_values[seq_idx]  # type: ignore[union-attr]
+            val = filtered[seq_idx]
 
-            if raw_value is None:
+            if val is None:
                 result[field] = prev_normalized  # type: ignore[union-attr]
                 continue
 
             if prev_normalized is None:
-                normalized = 100 if raw_value < FIRST_VALUE_FLOOR else raw_value
+                normalized = 100 if val < FIRST_VALUE_FLOOR else val
+            elif val > prev_normalized:
+                normalized = prev_normalized
             else:
-                if raw_value > prev_normalized:
-                    normalized = prev_normalized
-                elif seq_idx in large_drop_indices and seq_idx not in sustained_indices:
-                    normalized = prev_normalized
-                else:
-                    normalized = raw_value
+                normalized = val
 
             result[field] = normalized  # type: ignore[union-attr]
             prev_normalized = normalized
-            prev_raw = raw_value
 
 
 def _compute_score(result: dict) -> int:
