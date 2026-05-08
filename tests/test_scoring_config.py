@@ -20,7 +20,6 @@ class TestLoadScoringConfig:
                 weights:
                   kills: 2.0
                   score_gain: 0.8
-                  special: 1.2
                 death_penalty: 0.3
                 score_gain_window_seconds: 20
             """)
@@ -28,7 +27,6 @@ class TestLoadScoringConfig:
         cfg = load_scoring_config(p)
         assert cfg.weights.kills == 2.0
         assert cfg.weights.score_gain == 0.8
-        assert cfg.weights.special == 1.2
         assert cfg.death_penalty == 0.3
         assert cfg.score_gain_window_seconds == 20
 
@@ -53,7 +51,6 @@ class TestScoringDefaults:
         w = ScoringWeights()
         assert w.kills == 1.0
         assert w.score_gain == 1.0
-        assert w.special == 1.0
 
     def test_default_config(self) -> None:
         cfg = ScoringConfig()

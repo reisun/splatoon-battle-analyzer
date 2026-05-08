@@ -1,12 +1,11 @@
 """Single-pass highlight detection for Splatoon gameplay videos."""
 
 import logging
-import re
-import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+
 
 from src.battle_analyzer import BattleAnalyzer, build_frame_prompt
 from src.frame_extractor import extract_frames
@@ -18,26 +17,6 @@ logger = logging.getLogger(__name__)
 
 MAX_CLIP_SECONDS = 15
 MAX_TOTAL_SECONDS = 60
-
-MATCH_DURATION_3MIN = 180
-MATCH_DURATION_5MIN = 300
-
-
-def _parse_remaining_time(value: str | None) -> int | None:
-    """remaining_time文字列（"M:SS"形式）を秒数に変換する."""
-    if not value or not isinstance(value, str):
-        return None
-    m = re.match(r"(\d+):(\d{2})", value.strip())
-    if not m:
-        return None
-    return int(m.group(1)) * 60 + int(m.group(2))
-
-
-def _determine_match_duration(remaining_seconds: int) -> str:
-    """残り時間から試合時間（5:00 or 3:00）を判定する."""
-    if abs(remaining_seconds - MATCH_DURATION_5MIN) <= abs(remaining_seconds - MATCH_DURATION_3MIN):
-        return "5:00"
-    return "3:00"
 
 
 def _calc_score_gain(cur_count: int | None, future_avg: int | None) -> int:
@@ -154,11 +133,9 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
         return int(cfg.death_penalty)
     kills = max(0, min(4, result.get("kills", 0)))
     score_gain = max(0, min(10, result.get("score_gain", 0)))
-    special = 1 if result.get("special", False) else 0
     return int(
         kills * cfg.weights.kills
         + score_gain * cfg.weights.score_gain
-        + special * cfg.weights.special
     )
 
 
@@ -175,7 +152,6 @@ class FrameAnalysis:
     score: int
     kills: int
     score_gain: int
-    special: bool
     is_dead: bool
     my_team_color: str | None
     enemy_team_color: str | None
@@ -183,7 +159,6 @@ class FrameAnalysis:
     enemy_team_count: int | None
     my_team_count_raw: int | None
     enemy_team_count_raw: int | None
-    remaining_time: str | None
 
 
 @dataclass
@@ -227,29 +202,19 @@ class HighlightDetector:
         total_frames = len(frames)
         results: list[tuple[float, dict | str]] = [None] * total_frames  # type: ignore[list-item]
         done_count = [0]
-        match_duration: list[str | None] = [None]
-        duration_lock = threading.Lock()
+        prompt = build_frame_prompt()
 
         def _analyze_one(index: int) -> None:
             timestamp_sec = scan_start + index * self.interval
             ts_label = self._format_timestamp(timestamp_sec)
-            prompt = build_frame_prompt(match_duration[0])
             try:
                 result = self.analyzer.analyze_frame_from_memory_with_prompt(
                     frames[index], prompt, ts_label
                 )
             except Exception:
                 logger.exception("Analysis failed for frame at %s", ts_label)
-                result = {"kills": 1}
+                result = {"kills": 0}
             results[index] = (timestamp_sec, result)
-
-            if isinstance(result, dict) and match_duration[0] is None:
-                remaining = _parse_remaining_time(result.get("remaining_time"))
-                if remaining is not None:
-                    with duration_lock:
-                        if match_duration[0] is None:
-                            match_duration[0] = _determine_match_duration(remaining)
-                            logger.info("Match duration determined: %s", match_duration[0])
 
             done_count[0] += 1
             if progress_callback:
@@ -275,7 +240,6 @@ class HighlightDetector:
                 score=f.score,
                 kills=max(0, min(4, f.raw.get("kills", 0))),
                 score_gain=max(0, min(10, f.raw.get("score_gain", 0))),
-                special=bool(f.raw.get("special", False)),
                 is_dead=f.raw.get("is_dead", False),
                 my_team_color=f.raw.get("my_team_color", ""),
                 enemy_team_color=f.raw.get("enemy_team_color", ""),
@@ -283,7 +247,6 @@ class HighlightDetector:
                 enemy_team_count=f.raw.get("enemy_team_count"),
                 my_team_count_raw=f.raw.get("my_team_count_raw"),
                 enemy_team_count_raw=f.raw.get("enemy_team_count_raw"),
-                remaining_time=f.raw.get("remaining_time"),
             )
             for f in scored
         ]

@@ -1,7 +1,6 @@
 weights:
   kills: 3.0
   score_gain: 0.0
-  special: 2.0
 
 death_penalty: -3
 

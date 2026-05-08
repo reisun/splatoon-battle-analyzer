@@ -12,7 +12,6 @@ _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "scor
 class ScoringWeights:
     kills: float = 1.0
     score_gain: float = 1.0
-    special: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -33,7 +32,6 @@ def load_scoring_config(path: Path | None = None) -> ScoringConfig:
     weights = ScoringWeights(
         kills=float(w.get("kills", 1.0)),
         score_gain=float(w.get("score_gain", 1.0)),
-        special=float(w.get("special", 1.0)),
     )
     return ScoringConfig(
         weights=weights,
