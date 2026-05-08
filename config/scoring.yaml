@@ -1,7 +1,7 @@
 weights:
   kills: 3.0
-  score_gain: 0.0
+  score_count_gain: 0.0
 
 death_penalty: -3
 
-score_gain_window_seconds: 30
+score_count_gain_window_seconds: 30

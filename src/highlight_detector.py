@@ -19,8 +19,8 @@ MAX_CLIP_SECONDS = 15
 MAX_TOTAL_SECONDS = 60
 
 
-def _calc_score_gain(cur_count: int | None, future_avg: int | None) -> int:
-    """現時点と未来平均のゲームカウント差分から score_gain を計算."""
+def _calc_score_count_gain(cur_count: int | None, future_avg: int | None) -> int:
+    """現時点と未来平均のゲームカウント差分から score_count_gain を計算."""
     if cur_count is None or future_avg is None:
         return 0
     gain = (cur_count - future_avg) / 10
@@ -129,7 +129,7 @@ def _normalize_counts(
 class ScoreBreakdown:
     score: int
     score_kills: int
-    score_gain: int
+    score_count_gain: int
     score_dead: int
 
 
@@ -139,14 +139,14 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> ScoreBreak
         cfg = load_scoring_config()
     if result.get("is_dead", False):
         score_dead = int(cfg.death_penalty)
-        return ScoreBreakdown(score=score_dead, score_kills=0, score_gain=0, score_dead=score_dead)
+        return ScoreBreakdown(score=score_dead, score_kills=0, score_count_gain=0, score_dead=score_dead)
     kills = max(0, min(4, result.get("kills", 0)))
-    gain = max(0, min(10, result.get("score_gain", 0)))
+    gain = max(0, min(10, result.get("score_count_gain", 0)))
     score_kills = int(kills * cfg.weights.kills)
-    score_gain = int(gain * cfg.weights.score_gain)
+    score_count_gain = int(gain * cfg.weights.score_count_gain)
     return ScoreBreakdown(
-        score=score_kills + score_gain, score_kills=score_kills,
-        score_gain=score_gain, score_dead=0,
+        score=score_kills + score_count_gain, score_kills=score_kills,
+        score_count_gain=score_count_gain, score_dead=0,
     )
 
 
@@ -163,7 +163,7 @@ class FrameAnalysis:
     timestamp_seconds: float
     score: int
     score_kills: int
-    score_gain: int
+    score_count_gain: int
     score_dead: int
     my_team_count: int | None
     enemy_team_count: int | None
@@ -248,7 +248,7 @@ class HighlightDetector:
                 timestamp_seconds=f.timestamp,
                 score=f.score,
                 score_kills=f.breakdown.score_kills,
-                score_gain=f.breakdown.score_gain,
+                score_count_gain=f.breakdown.score_count_gain,
                 score_dead=f.breakdown.score_dead,
                 my_team_count=f.raw.get("my_team_count"),
                 enemy_team_count=f.raw.get("enemy_team_count"),
@@ -275,7 +275,7 @@ class HighlightDetector:
         cfg = load_scoring_config()
         sorted_results = sorted(results, key=lambda x: x[0])
         _normalize_counts(sorted_results)
-        window_size = max(1, int(cfg.score_gain_window_seconds / self.interval))
+        window_size = max(1, int(cfg.score_count_gain_window_seconds / self.interval))
 
         counts: list[int | None] = []
         for _, result in sorted_results:
@@ -286,14 +286,14 @@ class HighlightDetector:
 
         scored: list[_ScoredFrame] = []
         for i, (timestamp, result) in enumerate(sorted_results):
-            breakdown = ScoreBreakdown(score=0, score_kills=0, score_gain=0, score_dead=0)
+            breakdown = ScoreBreakdown(score=0, score_kills=0, score_count_gain=0, score_dead=0)
             raw: dict = {}
             if isinstance(result, dict):
                 raw = result
                 cur_count = counts[i]
                 future_slice = [c for c in counts[i + 1 : i + 1 + window_size] if c is not None]
                 future_avg = int(sum(future_slice) / len(future_slice)) if future_slice else None
-                raw["score_gain"] = _calc_score_gain(cur_count, future_avg)
+                raw["score_count_gain"] = _calc_score_count_gain(cur_count, future_avg)
                 breakdown = _compute_score(raw, cfg)
             scored.append(_ScoredFrame(timestamp, breakdown.score, breakdown, raw))
         return scored

@@ -41,7 +41,7 @@ class FrameResult(BaseModel):
     timestamp_seconds: float
     score: int
     score_kills: int
-    score_gain: int
+    score_count_gain: int
     score_dead: int
     my_team_count: int | None
     enemy_team_count: int | None
@@ -89,7 +89,7 @@ def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
             timestamp_seconds=f.timestamp_seconds,
             score=f.score,
             score_kills=f.score_kills,
-            score_gain=f.score_gain,
+            score_count_gain=f.score_count_gain,
             score_dead=f.score_dead,
             my_team_count=f.my_team_count,
             enemy_team_count=f.enemy_team_count,
