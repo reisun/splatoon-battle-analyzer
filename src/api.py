@@ -35,18 +35,15 @@ class SegmentResult(BaseModel):
     start_seconds: float
     end_seconds: float
     peak_intensity: int
-    description: str
 
 
 class FrameResult(BaseModel):
     timestamp_seconds: float
     score: int
     kills: int
-    assists: int
     score_gain: int
     special: int
     is_dead: bool
-    description: str
     my_team_color: str = ""
     enemy_team_color: str = ""
     my_team_count: int | None
@@ -94,11 +91,9 @@ def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
             timestamp_seconds=f.timestamp_seconds,
             score=f.score,
             kills=f.kills,
-            assists=f.assists,
             score_gain=f.score_gain,
             special=f.special,
             is_dead=f.is_dead,
-            description=f.description or "",
             my_team_color=f.my_team_color or "",
             enemy_team_color=f.enemy_team_color or "",
             my_team_count=f.my_team_count,
@@ -153,7 +148,6 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
                 start_seconds=h.start_seconds,
                 end_seconds=h.end_seconds,
                 peak_intensity=h.peak_intensity,
-                description=h.description,
             )
             for h in highlights
         ],

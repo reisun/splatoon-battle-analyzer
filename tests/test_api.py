@@ -57,7 +57,6 @@ class TestAnalyzeHighlightsEndpoint:
                 start_seconds=100.0,
                 end_seconds=130.0,
                 peak_intensity=8,
-                description="Intense battle",
             ),
         ]
 
@@ -193,7 +192,6 @@ class TestGetJobStatus:
                     "start_seconds": 100.0,
                     "end_seconds": 130.0,
                     "peak_intensity": 8,
-                    "description": "Intense battle",
                 }
             ],
             "scan_summary": {"total_frames": 10, "battle_frames": 5, "candidate_frames": 1},

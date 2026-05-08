@@ -502,7 +502,6 @@ class TestHighlightFormatting:
                 start_seconds=120.0,
                 end_seconds=155.0,
                 peak_intensity=8,
-                description="Multiple kills",
             )
         ]
         summary = {"total_frames": 40, "battle_frames": 30}
@@ -530,7 +529,6 @@ class TestHighlightFormatting:
                 start_seconds=60.0,
                 end_seconds=90.0,
                 peak_intensity=9,
-                description="Team wipe",
             )
         ]
         summary = {"total_frames": 20, "battle_frames": 15}
@@ -560,7 +558,6 @@ class TestHighlightModeRun:
                 start_seconds=30.0,
                 end_seconds=60.0,
                 peak_intensity=8,
-                description="Big play",
             )
         ]
         mock_detector.scan_summary = {
