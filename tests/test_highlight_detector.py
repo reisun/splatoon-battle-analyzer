@@ -8,7 +8,7 @@ from src.highlight_detector import (
     HighlightDetector,
     HighlightSegment,
     ScoreBreakdown,
-    _calc_score_gain,
+    _calc_score_count_gain,
     _compute_score,
     _isotonic_decreasing,
     _median_smooth,
@@ -20,7 +20,7 @@ from src.scoring_config import ScoringConfig, ScoringWeights
 _DEFAULT_CFG = ScoringConfig(
     weights=ScoringWeights(),
     death_penalty=0.5,
-    score_gain_window_seconds=30,
+    score_count_gain_window_seconds=30,
 )
 
 
@@ -28,86 +28,86 @@ class TestComputeScore:
     """Tests for _compute_score helper."""
 
     def test_all_ones(self) -> None:
-        result = {"kills": 1, "score_gain": 1}
+        result = {"kills": 1, "score_count_gain": 1}
         b = _compute_score(result, _DEFAULT_CFG)
         assert b.score == 2
         assert b.score_kills == 1
-        assert b.score_gain == 1
+        assert b.score_count_gain == 1
         assert b.score_dead == 0
 
     def test_all_max(self) -> None:
-        result = {"kills": 4, "score_gain": 10}
+        result = {"kills": 4, "score_count_gain": 10}
         assert _compute_score(result, _DEFAULT_CFG).score == 14
 
     def test_mixed_values(self) -> None:
-        result = {"kills": 3, "score_gain": 3}
+        result = {"kills": 3, "score_count_gain": 3}
         assert _compute_score(result, _DEFAULT_CFG).score == 6
 
     def test_missing_keys_default_to_zero(self) -> None:
         assert _compute_score({}, _DEFAULT_CFG).score == 0
 
     def test_kills_zero_is_valid(self) -> None:
-        result = {"kills": 0, "score_gain": 1}
+        result = {"kills": 0, "score_count_gain": 1}
         assert _compute_score(result, _DEFAULT_CFG).score == 1
 
     def test_clamps_above_four(self) -> None:
-        result = {"kills": 99, "score_gain": 1}
+        result = {"kills": 99, "score_count_gain": 1}
         assert _compute_score(result, _DEFAULT_CFG).score == 5
 
     def test_is_dead_returns_penalty_only(self) -> None:
-        result = {"kills": 5, "score_gain": 3, "is_dead": True}
+        result = {"kills": 5, "score_count_gain": 3, "is_dead": True}
         b = _compute_score(result, _DEFAULT_CFG)
         assert b.score == int(0.5)
         assert b.score_kills == 0
-        assert b.score_gain == 0
+        assert b.score_count_gain == 0
         assert b.score_dead == int(0.5)
 
     def test_is_dead_false_no_penalty(self) -> None:
-        result = {"kills": 3, "score_gain": 3, "is_dead": False}
+        result = {"kills": 3, "score_count_gain": 3, "is_dead": False}
         assert _compute_score(result, _DEFAULT_CFG).score == 6
 
     def test_custom_weights(self) -> None:
         cfg = ScoringConfig(
-            weights=ScoringWeights(kills=1.5, score_gain=1.0),
+            weights=ScoringWeights(kills=1.5, score_count_gain=1.0),
         )
-        result = {"kills": 4, "score_gain": 3}
+        result = {"kills": 4, "score_count_gain": 3}
         assert _compute_score(result, cfg).score == int(4 * 1.5 + 3)
 
     def test_custom_death_penalty(self) -> None:
         cfg = ScoringConfig(death_penalty=3)
-        result = {"kills": 10, "score_gain": 1, "is_dead": True}
+        result = {"kills": 10, "score_count_gain": 1, "is_dead": True}
         assert _compute_score(result, cfg).score == 3
 
 
 class TestCalcScoreGain:
-    """Tests for _calc_score_gain helper (forward-looking)."""
+    """Tests for _calc_score_count_gain helper (forward-looking)."""
 
     def test_both_none(self) -> None:
-        assert _calc_score_gain(None, None) == 0
+        assert _calc_score_count_gain(None, None) == 0
 
     def test_cur_none(self) -> None:
-        assert _calc_score_gain(None, 50) == 0
+        assert _calc_score_count_gain(None, 50) == 0
 
     def test_future_none(self) -> None:
-        assert _calc_score_gain(50, None) == 0
+        assert _calc_score_count_gain(50, None) == 0
 
     def test_no_change(self) -> None:
-        assert _calc_score_gain(50, 50) == 0
+        assert _calc_score_count_gain(50, 50) == 0
 
     def test_future_lower(self) -> None:
         # cur=80, future_avg=60 -> (80-60)/10 = 2
-        assert _calc_score_gain(80, 60) == 2
+        assert _calc_score_count_gain(80, 60) == 2
 
     def test_future_much_lower(self) -> None:
         # cur=80, future_avg=0 -> (80-0)/10 = 8
-        assert _calc_score_gain(80, 0) == 8
+        assert _calc_score_count_gain(80, 0) == 8
 
     def test_clamps_to_ten(self) -> None:
-        assert _calc_score_gain(100, 0) == 10
+        assert _calc_score_count_gain(100, 0) == 10
 
     def test_future_higher_clamps_to_zero(self) -> None:
         # cur=30, future_avg=50 -> (30-50)/10 = -2 -> clamped to 0
-        assert _calc_score_gain(30, 50) == 0
+        assert _calc_score_count_gain(30, 50) == 0
 
 
 class TestHighlightSegment:
@@ -139,7 +139,7 @@ class TestHighlightDetectorInit:
 
 
 class TestScoreFrames:
-    """Tests for _score_frames (forward-looking score_gain)."""
+    """Tests for _score_frames (forward-looking score_count_gain)."""
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     def test_empty(self, _mock_cfg: MagicMock) -> None:
@@ -164,12 +164,12 @@ class TestScoreFrames:
         # first frame: future window covers 60s, avg of 80,80,60,60,60=68
         # gain = (80-68)/10 = 1.2 -> int=1 -> 4+1=5
         assert scored[0].score == 5
-        # last frame: no future -> score_gain=0 -> 4+0=4
+        # last frame: no future -> score_count_gain=0 -> 4+0=4
         assert scored[5].score == 4
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    def test_score_gain_uses_future_window(self, _mock_cfg: MagicMock) -> None:
-        """score_gain は未来30秒分のカウント平均から計算."""
+    def test_score_count_gain_uses_future_window(self, _mock_cfg: MagicMock) -> None:
+        """score_count_gain は未来30秒分のカウント平均から計算."""
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         # 9 frames = 0s~40s. Window=30s/5s=6 frames.
@@ -187,9 +187,9 @@ class TestScoreFrames:
         scored = detector._score_frames(results)
         # At 0s: future 6 frames = [95,90,85,80,75,70], avg=82.5->82
         # gain = (100-82)/10 = 1.8 -> int=1
-        assert scored[0].raw["score_gain"] == 1
-        # At 40s (last): no future -> score_gain=0
-        assert scored[8].raw["score_gain"] == 0
+        assert scored[0].raw["score_count_gain"] == 1
+        # At 40s (last): no future -> score_count_gain=0
+        assert scored[8].raw["score_count_gain"] == 0
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     def test_non_dict_result_scores_zero(self, _mock_cfg: MagicMock) -> None:
@@ -204,8 +204,8 @@ class TestScoreFrames:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer)
         results = [
-            (10.0, {"kills": 1, "score_gain": 1, "special": False}),
-            (0.0, {"kills": 2, "score_gain": 1, "special": False}),
+            (10.0, {"kills": 1, "score_count_gain": 1, "special": False}),
+            (0.0, {"kills": 2, "score_count_gain": 1, "special": False}),
         ]
         scored = detector._score_frames(results)
         assert scored[0].timestamp == 0.0
@@ -301,7 +301,7 @@ class TestDetectFlow:
         analyzer.concurrency = 4
         analyzer.analyze_frame_split.return_value = {
             "kills": 1,
-            "score_gain": 1,
+            "score_count_gain": 1,
             "special": False,
         }
 
@@ -359,7 +359,7 @@ class TestDetectFlow:
         analyzer.concurrency = 1
         analyzer.analyze_frame_split.return_value = {
             "kills": 1,
-            "score_gain": 1,
+            "score_count_gain": 1,
             "special": False,
         }
 
@@ -390,7 +390,7 @@ class TestDetectFlow:
             thread_ids.append(threading.current_thread().ident)
             return {
                 "kills": 1,
-                "score_gain": 1,
+                "score_count_gain": 1,
             }
 
         analyzer = MagicMock()
