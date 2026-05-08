@@ -40,11 +40,13 @@ class SegmentResult(BaseModel):
 class FrameResult(BaseModel):
     timestamp_seconds: float
     score: int
-    kills: int
+    score_kills: int
     score_gain: int
-    is_dead: bool
+    score_dead: int
     my_team_count: int | None
     enemy_team_count: int | None
+    kills: int
+    is_dead: bool
     my_team_count_raw: int | None
     enemy_team_count_raw: int | None
 
@@ -86,11 +88,13 @@ def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
         FrameResult(
             timestamp_seconds=f.timestamp_seconds,
             score=f.score,
-            kills=f.kills,
+            score_kills=f.score_kills,
             score_gain=f.score_gain,
-            is_dead=f.is_dead,
+            score_dead=f.score_dead,
             my_team_count=f.my_team_count,
             enemy_team_count=f.enemy_team_count,
+            kills=f.kills,
+            is_dead=f.is_dead,
             my_team_count_raw=f.my_team_count_raw,
             enemy_team_count_raw=f.enemy_team_count_raw,
         )

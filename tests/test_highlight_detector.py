@@ -7,6 +7,7 @@ import numpy as np
 from src.highlight_detector import (
     HighlightDetector,
     HighlightSegment,
+    ScoreBreakdown,
     _calc_score_gain,
     _compute_score,
     _isotonic_decreasing,
@@ -27,56 +28,55 @@ class TestComputeScore:
     """Tests for _compute_score helper."""
 
     def test_all_ones(self) -> None:
-        result = {"kills": 1, "score_gain": 1, "special": False}
-        assert _compute_score(result, _DEFAULT_CFG) == 2
+        result = {"kills": 1, "score_gain": 1}
+        b = _compute_score(result, _DEFAULT_CFG)
+        assert b.score == 2
+        assert b.score_kills == 1
+        assert b.score_gain == 1
+        assert b.score_dead == 0
 
     def test_all_max(self) -> None:
         result = {"kills": 4, "score_gain": 10}
-        assert _compute_score(result, _DEFAULT_CFG) == 14
+        assert _compute_score(result, _DEFAULT_CFG).score == 14
 
     def test_mixed_values(self) -> None:
         result = {"kills": 3, "score_gain": 3}
-        assert _compute_score(result, _DEFAULT_CFG) == 6
+        assert _compute_score(result, _DEFAULT_CFG).score == 6
 
     def test_missing_keys_default_to_zero(self) -> None:
-        assert _compute_score({}, _DEFAULT_CFG) == 0
+        assert _compute_score({}, _DEFAULT_CFG).score == 0
 
     def test_kills_zero_is_valid(self) -> None:
-        result = {"kills": 0, "score_gain": 1, "special": False}
-        assert _compute_score(result, _DEFAULT_CFG) == 1
+        result = {"kills": 0, "score_gain": 1}
+        assert _compute_score(result, _DEFAULT_CFG).score == 1
 
     def test_clamps_above_four(self) -> None:
-        result = {"kills": 99, "score_gain": 1, "special": False}
-        assert _compute_score(result, _DEFAULT_CFG) == 5
+        result = {"kills": 99, "score_gain": 1}
+        assert _compute_score(result, _DEFAULT_CFG).score == 5
 
     def test_is_dead_returns_penalty_only(self) -> None:
-        result = {
-            "kills": 5,
-            "score_gain": 3,
-            "special": True,
-            "is_dead": True,
-        }
-        assert _compute_score(result, _DEFAULT_CFG) == int(0.5)
+        result = {"kills": 5, "score_gain": 3, "is_dead": True}
+        b = _compute_score(result, _DEFAULT_CFG)
+        assert b.score == int(0.5)
+        assert b.score_kills == 0
+        assert b.score_gain == 0
+        assert b.score_dead == int(0.5)
 
     def test_is_dead_false_no_penalty(self) -> None:
-        result = {
-            "kills": 3,
-            "score_gain": 3,
-            "is_dead": False,
-        }
-        assert _compute_score(result, _DEFAULT_CFG) == 6
+        result = {"kills": 3, "score_gain": 3, "is_dead": False}
+        assert _compute_score(result, _DEFAULT_CFG).score == 6
 
     def test_custom_weights(self) -> None:
         cfg = ScoringConfig(
             weights=ScoringWeights(kills=1.5, score_gain=1.0),
         )
         result = {"kills": 4, "score_gain": 3}
-        assert _compute_score(result, cfg) == int(4 * 1.5 + 3)
+        assert _compute_score(result, cfg).score == int(4 * 1.5 + 3)
 
     def test_custom_death_penalty(self) -> None:
         cfg = ScoringConfig(death_penalty=3)
-        result = {"kills": 10, "score_gain": 1, "special": False, "is_dead": True}
-        assert _compute_score(result, cfg) == 3
+        result = {"kills": 10, "score_gain": 1, "is_dead": True}
+        assert _compute_score(result, cfg).score == 3
 
 
 class TestCalcScoreGain:
@@ -225,9 +225,9 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 1, {}),
-            _ScoredFrame(5.0, 1, {}),
-            _ScoredFrame(10.0, 1, {}),
+            _ScoredFrame(0.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
+            _ScoredFrame(5.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
+            _ScoredFrame(10.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 1
@@ -236,9 +236,9 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 10, {}),
-            _ScoredFrame(5.0, 20, {}),
-            _ScoredFrame(10.0, 10, {}),
+            _ScoredFrame(0.0, 10, ScoreBreakdown(10, 0, 0, 0), {}),
+            _ScoredFrame(5.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
+            _ScoredFrame(10.0, 10, ScoreBreakdown(10, 0, 0, 0), {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 1
@@ -251,12 +251,12 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 30, {}),
-            _ScoredFrame(5.0, 1, {}),
-            _ScoredFrame(10.0, 1, {}),
-            _ScoredFrame(15.0, 20, {}),
-            _ScoredFrame(20.0, 20, {}),
-            _ScoredFrame(25.0, 20, {}),
+            _ScoredFrame(0.0, 30, ScoreBreakdown(30, 0, 0, 0), {}),
+            _ScoredFrame(5.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
+            _ScoredFrame(10.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
+            _ScoredFrame(15.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
+            _ScoredFrame(20.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
+            _ScoredFrame(25.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 2
@@ -268,15 +268,15 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 20, {}),
-            _ScoredFrame(5.0, 20, {}),
-            _ScoredFrame(10.0, 20, {}),
-            _ScoredFrame(15.0, 1, {}),
-            _ScoredFrame(20.0, 1, {}),
-            _ScoredFrame(25.0, 1, {}),
-            _ScoredFrame(30.0, 15, {}),
-            _ScoredFrame(35.0, 15, {}),
-            _ScoredFrame(40.0, 15, {}),
+            _ScoredFrame(0.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
+            _ScoredFrame(5.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
+            _ScoredFrame(10.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
+            _ScoredFrame(15.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
+            _ScoredFrame(20.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
+            _ScoredFrame(25.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
+            _ScoredFrame(30.0, 15, ScoreBreakdown(15, 0, 0, 0), {}),
+            _ScoredFrame(35.0, 15, ScoreBreakdown(15, 0, 0, 0), {}),
+            _ScoredFrame(40.0, 15, ScoreBreakdown(15, 0, 0, 0), {}),
         ]
         segments = detector._select_windows(scored)
         for i in range(len(segments) - 1):
