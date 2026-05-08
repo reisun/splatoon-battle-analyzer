@@ -18,10 +18,16 @@
 
 ## クイックスタート
 
+> **前提**: [llm-playground](https://github.com/reisun/llm-playground) が起動済みであること（`llm-network` Docker ネットワークと agent-gateway を提供）。
+
 ```bash
+# 1. llm-playground を先に起動（未起動の場合）
+cd ../llm-playground && docker compose up -d && cd -
+
+# 2. 本サービスを起動
 git clone https://github.com/reisun/splatoon-battle-analyzer.git
 cd splatoon-battle-analyzer
-cp .env.example .env  # 必要に応じて設定を編集
+cp .env.example .env
 docker compose build
 docker compose up      # localhost:8020 で API サーバーが起動
 ```
