@@ -30,24 +30,24 @@ class TestComputeScore:
         result = {"kills": 1, "score_gain": 1, "special": False}
         assert _compute_score(result, _DEFAULT_CFG) == 3
 
-    def test_all_tens(self) -> None:
-        result = {"kills": 10, "score_gain": 10, "special": True}
-        assert _compute_score(result, _DEFAULT_CFG) == 30
+    def test_all_max(self) -> None:
+        result = {"kills": 4, "score_gain": 10, "special": True}
+        assert _compute_score(result, _DEFAULT_CFG) == 24
 
     def test_mixed_values(self) -> None:
-        result = {"kills": 5, "score_gain": 3, "special": True}
-        assert _compute_score(result, _DEFAULT_CFG) == 5 + 3 + 10
+        result = {"kills": 3, "score_gain": 3, "special": True}
+        assert _compute_score(result, _DEFAULT_CFG) == 3 + 3 + 10
 
-    def test_missing_keys_default_to_one(self) -> None:
-        assert _compute_score({}, _DEFAULT_CFG) == 3
+    def test_missing_keys_default_to_zero_kills(self) -> None:
+        assert _compute_score({}, _DEFAULT_CFG) == 2
 
-    def test_clamps_below_one(self) -> None:
+    def test_kills_zero_is_valid(self) -> None:
         result = {"kills": 0, "score_gain": 1, "special": False}
-        assert _compute_score(result, _DEFAULT_CFG) == 3
+        assert _compute_score(result, _DEFAULT_CFG) == 2
 
-    def test_clamps_above_ten(self) -> None:
+    def test_clamps_above_four(self) -> None:
         result = {"kills": 99, "score_gain": 1, "special": False}
-        assert _compute_score(result, _DEFAULT_CFG) == 12
+        assert _compute_score(result, _DEFAULT_CFG) == 6
 
     def test_is_dead_returns_penalty_only(self) -> None:
         result = {
@@ -60,12 +60,12 @@ class TestComputeScore:
 
     def test_is_dead_false_no_penalty(self) -> None:
         result = {
-            "kills": 5,
+            "kills": 3,
             "score_gain": 3,
             "special": True,
             "is_dead": False,
         }
-        assert _compute_score(result, _DEFAULT_CFG) == 5 + 3 + 10
+        assert _compute_score(result, _DEFAULT_CFG) == 3 + 3 + 10
 
     def test_custom_weights(self) -> None:
         cfg = ScoringConfig(
@@ -153,20 +153,20 @@ class TestScoreFrames:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer)
         results = [
-            (0.0, {"kills": 5, "special": True, "my_team_count": 80}),
-            (5.0, {"kills": 5, "special": True, "my_team_count": 80}),
-            (10.0, {"kills": 5, "special": True, "my_team_count": 80}),
-            (15.0, {"kills": 5, "special": True, "my_team_count": 60}),
-            (20.0, {"kills": 5, "special": True, "my_team_count": 60}),
-            (25.0, {"kills": 5, "special": True, "my_team_count": 60}),
+            (0.0, {"kills": 4, "special": True, "my_team_count": 80}),
+            (5.0, {"kills": 4, "special": True, "my_team_count": 80}),
+            (10.0, {"kills": 4, "special": True, "my_team_count": 80}),
+            (15.0, {"kills": 4, "special": True, "my_team_count": 60}),
+            (20.0, {"kills": 4, "special": True, "my_team_count": 60}),
+            (25.0, {"kills": 4, "special": True, "my_team_count": 60}),
         ]
         scored = detector._score_frames(results)
         assert len(scored) == 6
         # first frame: future window covers 60s, avg of 80,80,60,60,60=68
-        # gain = (80-68)/10+1 = 2.2 -> int=2 -> 5+2+10=17
-        assert scored[0].score == 17
-        # last frame: no future -> score_gain=1 -> 5+1+10=16
-        assert scored[5].score == 16
+        # gain = (80-68)/10+1 = 2.2 -> int=2 -> 4+2+10=16
+        assert scored[0].score == 16
+        # last frame: no future -> score_gain=1 -> 4+1+10=15
+        assert scored[5].score == 15
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     def test_score_gain_uses_future_window(self, _mock_cfg: MagicMock) -> None:

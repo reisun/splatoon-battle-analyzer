@@ -198,7 +198,6 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
                     start_seconds=h.start_seconds,
                     end_seconds=h.end_seconds,
                     peak_intensity=h.peak_intensity,
-                    description=h.description,
                 )
                 for h in highlights
             ],
