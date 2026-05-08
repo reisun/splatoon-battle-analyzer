@@ -152,7 +152,7 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
         cfg = load_scoring_config()
     if result.get("is_dead", False):
         return int(cfg.death_penalty)
-    kills = max(1, min(10, result.get("kills", 1)))
+    kills = max(0, min(4, result.get("kills", 0)))
     score_gain = max(1, min(10, result.get("score_gain", 1)))
     special = 10 if result.get("special", False) else 1
     return int(
@@ -273,7 +273,7 @@ class HighlightDetector:
             FrameAnalysis(
                 timestamp_seconds=f.timestamp,
                 score=f.score,
-                kills=max(1, min(10, f.raw.get("kills", 1))),
+                kills=max(0, min(4, f.raw.get("kills", 0))),
                 score_gain=max(1, min(10, f.raw.get("score_gain", 1))),
                 special=bool(f.raw.get("special", False)),
                 is_dead=f.raw.get("is_dead", False),

@@ -57,12 +57,12 @@ FRAME_ANALYSIS_SYSTEM_PROMPT = """\
 相手チームの色はタイマー右側のイカランプの色で確認してください。
 
 ■ 各項目:
-- kills: 「◯◯ をたおした！」の表示が複数ある場合はその数をカウントする。表示がない場合は0
-- special: 自プレイヤーがスペシャルウェポンが発動中、またはその効果が見えるか？
-- is_dead: 自プレイヤーがデス中か？(true/false)（画面が暗転・復帰待ち状態ならtrue）
-- remaining_time: 画面上部中央のタイマーに表示されている残り時間を必ず「M:SS」形式で記録すること
-- my_team_color および enemy_team_color: タイマー左側と右側のイカランプの色を記録すること（例: "オレンジ", "ブルー"）
-- my_team_count および enemy_team_count: 自チームと相手チームのカウントを記録すること(ゲームカウントが不明ならnull。)
+- remaining_time: (M:SS) 画面上部中央のタイマーに表示されている残り時間。
+- my_team_color および enemy_team_color: (文字列) タイマー左側と右側のイカランプの色を記録すること（例: "オレンジ", "ブルー"）
+- special: (true/false) 自プレイヤーがスペシャルウェポンが発動中と見られればtrue。不明瞭な場合はfalse
+- my_team_count および enemy_team_count: (null, 0~100) 自チームと相手チームのカウントを記録すること。不明瞭な場合はnull
+- kills: (0~4)「◯◯ をたおした！」の表示が複数ある場合はその数をカウントする。表示がない場合や不明瞭の場合は0
+- is_dead: (true/false) 自プレイヤーがデス中か？画面が暗転・復帰待ち状態ならtrue。不明瞭な場合はfalse
 
 ■ 出力フォーマット（JSONのみ、他のテキスト不可）:
 {"kills": 1, "special": false, "is_dead": false, "remaining_time": "4:30",
