@@ -389,7 +389,6 @@ def format_highlight_json(
                 "start_seconds": h.start_seconds,
                 "end_seconds": h.end_seconds,
                 "peak_intensity": h.peak_intensity,
-                "description": h.description,
             }
             for h in highlights
         ],
@@ -418,7 +417,6 @@ def format_highlight_text(highlights: list, scan_summary: dict) -> str:
             lines.append(f"Highlight #{i}:")
             lines.append(f"  Time: {h.start_seconds:.0f}s - {h.end_seconds:.0f}s")
             lines.append(f"  Peak intensity: {h.peak_intensity}")
-            lines.append(f"  Description: {h.description}")
             lines.append("")
 
     lines.append("=" * 60)

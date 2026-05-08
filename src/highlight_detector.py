@@ -153,12 +153,10 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
     if result.get("is_dead", False):
         return int(cfg.death_penalty)
     kills = max(1, min(10, result.get("kills", 1)))
-    assists = max(1, min(10, result.get("assists", 1)))
     score_gain = max(1, min(10, result.get("score_gain", 1)))
     special = max(1, min(10, result.get("special", 1)))
     return int(
         kills * cfg.weights.kills
-        + assists * cfg.weights.assists
         + score_gain * cfg.weights.score_gain
         + special * cfg.weights.special
     )
@@ -168,7 +166,6 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
 class _ScoredFrame:
     timestamp: float
     score: int
-    description: str
     raw: dict
 
 
@@ -177,11 +174,9 @@ class FrameAnalysis:
     timestamp_seconds: float
     score: int
     kills: int
-    assists: int
     score_gain: int
     special: int
     is_dead: bool
-    description: str | None
     my_team_color: str | None
     enemy_team_color: str | None
     my_team_count: int | None
@@ -196,7 +191,6 @@ class HighlightSegment:
     start_seconds: float
     end_seconds: float
     peak_intensity: int
-    description: str
 
 
 class HighlightDetector:
@@ -246,7 +240,7 @@ class HighlightDetector:
                 )
             except Exception:
                 logger.exception("Analysis failed for frame at %s", ts_label)
-                result = {"kills": 1, "description": "analysis failed"}
+                result = {"kills": 1}
             results[index] = (timestamp_sec, result)
 
             if isinstance(result, dict) and match_duration[0] is None:
@@ -280,11 +274,9 @@ class HighlightDetector:
                 timestamp_seconds=f.timestamp,
                 score=f.score,
                 kills=max(1, min(10, f.raw.get("kills", 1))),
-                assists=max(1, min(10, f.raw.get("assists", 1))),
                 score_gain=max(1, min(10, f.raw.get("score_gain", 1))),
                 special=max(1, min(10, f.raw.get("special", 1))),
                 is_dead=f.raw.get("is_dead", False),
-                description=f.raw.get("description", ""),
                 my_team_color=f.raw.get("my_team_color", ""),
                 enemy_team_color=f.raw.get("enemy_team_color", ""),
                 my_team_count=f.raw.get("my_team_count"),
@@ -323,7 +315,6 @@ class HighlightDetector:
         scored: list[_ScoredFrame] = []
         for i, (timestamp, result) in enumerate(sorted_results):
             score = 0
-            description = ""
             raw: dict = {}
             if isinstance(result, dict):
                 raw = result
@@ -332,8 +323,7 @@ class HighlightDetector:
                 future_avg = int(sum(future_slice) / len(future_slice)) if future_slice else None
                 raw["score_gain"] = _calc_score_gain(cur_count, future_avg)
                 score = _compute_score(raw, cfg)
-                description = raw.get("description", "")
-            scored.append(_ScoredFrame(timestamp, score, description, raw))
+            scored.append(_ScoredFrame(timestamp, score, raw))
         return scored
 
     def _select_windows(self, scored: list[_ScoredFrame]) -> list[HighlightSegment]:
@@ -360,14 +350,11 @@ class HighlightDetector:
                 break
 
             end_idx = min(best_idx + window_size - 1, n - 1)
-            window = scored[best_idx : end_idx + 1]
-            descriptions = [f.description for f in window if f.description]
             segments.append(
                 HighlightSegment(
                     start_seconds=scored[best_idx].timestamp,
                     end_seconds=scored[end_idx].timestamp + self.interval,
                     peak_intensity=best_total,
-                    description=self._summarize_descriptions(descriptions),
                 )
             )
 
@@ -376,13 +363,6 @@ class HighlightDetector:
 
         segments.sort(key=lambda s: s.start_seconds)
         return segments
-
-    @staticmethod
-    def _summarize_descriptions(descriptions: list[str]) -> str:
-        if not descriptions:
-            return ""
-        unique = list(dict.fromkeys(descriptions))
-        return "; ".join(unique[:3])
 
     @staticmethod
     def _format_timestamp(seconds: float) -> str:

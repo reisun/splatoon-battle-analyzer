@@ -19,7 +19,6 @@ class TestLoadScoringConfig:
             dedent("""\
                 weights:
                   kills: 2.0
-                  assists: 1.5
                   score_gain: 0.8
                   special: 1.2
                 death_penalty: 0.3
@@ -28,7 +27,6 @@ class TestLoadScoringConfig:
         )
         cfg = load_scoring_config(p)
         assert cfg.weights.kills == 2.0
-        assert cfg.weights.assists == 1.5
         assert cfg.weights.score_gain == 0.8
         assert cfg.weights.special == 1.2
         assert cfg.death_penalty == 0.3
@@ -39,7 +37,6 @@ class TestLoadScoringConfig:
         p.write_text("weights:\n  kills: 1.5\n")
         cfg = load_scoring_config(p)
         assert cfg.weights.kills == 1.5
-        assert cfg.weights.assists == 1.0
         assert cfg.death_penalty == 0.5
 
     def test_empty_file_returns_defaults(self, tmp_path: Path) -> None:
@@ -55,7 +52,6 @@ class TestScoringDefaults:
     def test_default_weights(self) -> None:
         w = ScoringWeights()
         assert w.kills == 1.0
-        assert w.assists == 1.0
         assert w.score_gain == 1.0
         assert w.special == 1.0
 
