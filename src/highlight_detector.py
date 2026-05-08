@@ -125,17 +125,28 @@ def _normalize_counts(
                 result[field] = prev_val
 
 
-def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
-    """4項目の重み付き加算でスコアを計算。デス中は係数のみ."""
+@dataclass
+class ScoreBreakdown:
+    score: int
+    score_kills: int
+    score_gain: int
+    score_dead: int
+
+
+def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> ScoreBreakdown:
+    """重み付き加算でスコアを計算し内訳を返す."""
     if cfg is None:
         cfg = load_scoring_config()
     if result.get("is_dead", False):
-        return int(cfg.death_penalty)
+        score_dead = int(cfg.death_penalty)
+        return ScoreBreakdown(score=score_dead, score_kills=0, score_gain=0, score_dead=score_dead)
     kills = max(0, min(4, result.get("kills", 0)))
-    score_gain = max(0, min(10, result.get("score_gain", 0)))
-    return int(
-        kills * cfg.weights.kills
-        + score_gain * cfg.weights.score_gain
+    gain = max(0, min(10, result.get("score_gain", 0)))
+    score_kills = int(kills * cfg.weights.kills)
+    score_gain = int(gain * cfg.weights.score_gain)
+    return ScoreBreakdown(
+        score=score_kills + score_gain, score_kills=score_kills,
+        score_gain=score_gain, score_dead=0,
     )
 
 
@@ -143,6 +154,7 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
 class _ScoredFrame:
     timestamp: float
     score: int
+    breakdown: ScoreBreakdown
     raw: dict
 
 
@@ -150,11 +162,13 @@ class _ScoredFrame:
 class FrameAnalysis:
     timestamp_seconds: float
     score: int
-    kills: int
+    score_kills: int
     score_gain: int
-    is_dead: bool
+    score_dead: int
     my_team_count: int | None
     enemy_team_count: int | None
+    kills: int
+    is_dead: bool
     my_team_count_raw: int | None
     enemy_team_count_raw: int | None
 
@@ -233,11 +247,13 @@ class HighlightDetector:
             FrameAnalysis(
                 timestamp_seconds=f.timestamp,
                 score=f.score,
-                kills=max(0, min(4, f.raw.get("kills", 0))),
-                score_gain=max(0, min(10, f.raw.get("score_gain", 0))),
-                is_dead=f.raw.get("is_dead", False),
+                score_kills=f.breakdown.score_kills,
+                score_gain=f.breakdown.score_gain,
+                score_dead=f.breakdown.score_dead,
                 my_team_count=f.raw.get("my_team_count"),
                 enemy_team_count=f.raw.get("enemy_team_count"),
+                kills=max(0, min(4, f.raw.get("kills", 0))),
+                is_dead=f.raw.get("is_dead", False),
                 my_team_count_raw=f.raw.get("my_team_count_raw"),
                 enemy_team_count_raw=f.raw.get("enemy_team_count_raw"),
             )
@@ -270,7 +286,7 @@ class HighlightDetector:
 
         scored: list[_ScoredFrame] = []
         for i, (timestamp, result) in enumerate(sorted_results):
-            score = 0
+            breakdown = ScoreBreakdown(score=0, score_kills=0, score_gain=0, score_dead=0)
             raw: dict = {}
             if isinstance(result, dict):
                 raw = result
@@ -278,8 +294,8 @@ class HighlightDetector:
                 future_slice = [c for c in counts[i + 1 : i + 1 + window_size] if c is not None]
                 future_avg = int(sum(future_slice) / len(future_slice)) if future_slice else None
                 raw["score_gain"] = _calc_score_gain(cur_count, future_avg)
-                score = _compute_score(raw, cfg)
-            scored.append(_ScoredFrame(timestamp, score, raw))
+                breakdown = _compute_score(raw, cfg)
+            scored.append(_ScoredFrame(timestamp, breakdown.score, breakdown, raw))
         return scored
 
     def _select_windows(self, scored: list[_ScoredFrame]) -> list[HighlightSegment]:
