@@ -37,9 +37,10 @@ def _save_temp_frame(frame: np.ndarray) -> str:
     return path
 
 
-FRAME_ANALYSIS_SYSTEM_PROMPT = """\
-あなたはスプラトゥーンのゲーム画面を分析する専門AIです。
-画像を受け取り、以下のルールに従ってJSON形式で回答してください。
+UPPER_HALF_SYSTEM_PROMPT = """\
+あなたはスプラトゥーンのゲーム画面の上部を分析する専門AIです。
+この画像はゲーム画面の上半分のみをクロップしたものです。
+以下のルールに従ってJSON形式で回答してください。
 
 ■ UI要素の位置:
 - 画面上部中央:
@@ -48,44 +49,59 @@ FRAME_ANALYSIS_SYSTEM_PROMPT = """\
     自チームの色のイカランプ4つ
 - タイマーの右側:
     相手チーム色のイカランプ4つ
-- タイマーの下: 
+- タイマーの下:
     ゲームカウント。自チームの色と相手チームの色の２つ
     カウントの上に小さく「のこり」と表示されている
-- ゲームカウント回りの小さな数字: 
+- ゲームカウント回りの小さな数字:
     ルールごとに仕様が異なり複雑なため無視する。混同注意。
-- 画面下部中央: 
-    直近で倒したプレイヤーの名前「◯◯ をたおした！」と表示される
-    薄い透過黒背景に白文字
-    周囲に別の表示が重なることが多く表示されるため混同注意。
-    「◯◯ をたおした！」の完全一致で判断すること
 
 ■ チームカラーの確認方法:
 自チームの色はタイマー左側のイカランプの色で確認してください。
 相手チームの色はタイマー右側のイカランプの色で確認してください。
 
 ■ 各項目:
-- my_team_color および enemy_team_color: (文字列) タイマー左側と右側のイカランプの色を記録すること
-- my_team_count および enemy_team_count: (null, 0~100) 自チームと相手チームのカウントを記録すること。不明瞭な場合はnull
-- kills: (0~4)「◯◯ をたおした！」の完全一致の数で判断する。複数ある場合はその数をカウントする。不明瞭な場合はカウントしない
-- is_dead: (true/false) 自プレイヤーがデス中か？画面が暗転・復帰待ち状態ならtrue。不明瞭な場合はfalse
+- my_team_color / enemy_team_color: (文字列) タイマー左右のイカランプの色
+- my_team_count / enemy_team_count: (null, 0~100) 自チーム・相手チームのカウント。不明瞭な場合はnull
 
 ■ 出力フォーマット（JSONのみ、他のテキスト不可）:
 {
   "my_team_color": string | null,
   "enemy_team_color": string | null,
   "my_team_count": number | null,
-  "enemy_team_count": number | null,
+  "enemy_team_count": number | null
+}
+"""
+
+LOWER_HALF_SYSTEM_PROMPT = """\
+あなたはスプラトゥーンのゲーム画面の下部を分析する専門AIです。
+この画像はゲーム画面の下半分のみをクロップしたものです。
+以下のルールに従ってJSON形式で回答してください。
+
+■ UI要素の位置:
+- 画面下部中央:
+    直近で倒したプレイヤーの名前「◯◯ をたおした！」と表示される
+    薄い透過黒背景に白文字
+    周囲に別の表示が重なることが多いため混同注意。
+    「◯◯ をたおした！」の完全一致で判断すること
+- 画面右下:
+    デス中は「復活まであと◯◯秒」と表示される
+
+■ 各項目:
+- kills: (0~4)「◯◯ をたおした！」の完全一致の数で判断する。複数ある場合はその数をカウントする。不明瞭な場合はカウントしない
+- is_dead: (true/false) 自プレイヤーがデス中か？「復活まであと」の表示や画面暗転があればtrue。不明瞭な場合はfalse
+
+■ 出力フォーマット（JSONのみ、他のテキスト不可）:
+{
   "kills": number,
   "is_dead": boolean
 }
 """
 
-FRAME_ANALYSIS_PROMPT = FRAME_ANALYSIS_SYSTEM_PROMPT
+UPPER_HALF_USER_PROMPT = "この画像（ゲーム画面の上半分）を分析してJSON形式で回答してください。"
+LOWER_HALF_USER_PROMPT = "この画像（ゲーム画面の下半分）を分析してJSON形式で回答してください。"
 
-
-def build_frame_prompt() -> str:
-    """フレーム分析プロンプトを生成する."""
-    return "この画像を分析してJSON形式で回答してください。"
+FRAME_ANALYSIS_SYSTEM_PROMPT = UPPER_HALF_SYSTEM_PROMPT
+FULL_FRAME_USER_PROMPT = "この画像を分析してJSON形式で回答してください。"
 
 
 def parse_llm_response(text: str) -> dict | str:
@@ -232,7 +248,7 @@ class BattleAnalyzer:
 
         logger.info("Analyzing frame: %s", image_path.name)
         result = self._call_agent_gateway(
-            build_frame_prompt(),
+            FULL_FRAME_USER_PROMPT,
             str(image_path.resolve()),
             system_prompt=FRAME_ANALYSIS_SYSTEM_PROMPT,
         )
@@ -253,7 +269,7 @@ class BattleAnalyzer:
         try:
             logger.info("Analyzing frame at %s", timestamp)
             result = self._call_agent_gateway(
-                build_frame_prompt(),
+                FULL_FRAME_USER_PROMPT,
                 tmp_path,
                 system_prompt=FRAME_ANALYSIS_SYSTEM_PROMPT,
             )
@@ -261,6 +277,63 @@ class BattleAnalyzer:
             return parse_llm_response(result)
         finally:
             os.unlink(tmp_path)
+
+    def _analyze_cropped(
+        self,
+        frame: np.ndarray,
+        user_prompt: str,
+        system_prompt: str,
+        timestamp: str,
+    ) -> dict | str:
+        """Analyze a cropped frame region."""
+        tmp_path = _save_temp_frame(frame)
+        try:
+            result = self._call_agent_gateway(
+                user_prompt, tmp_path, system_prompt=system_prompt
+            )
+            return parse_llm_response(result)
+        finally:
+            os.unlink(tmp_path)
+
+    @staticmethod
+    def _merge_results(upper: dict | str, lower: dict | str) -> dict:
+        """Merge upper/lower half analysis results into a single dict."""
+        merged: dict = {}
+        if isinstance(upper, dict):
+            merged.update(upper)
+        else:
+            merged.update({
+                "my_team_color": None, "enemy_team_color": None,
+                "my_team_count": None, "enemy_team_count": None,
+            })
+        if isinstance(lower, dict):
+            merged.update(lower)
+        else:
+            merged.update({"kills": 0, "is_dead": False})
+        return merged
+
+    def analyze_frame_split(self, frame: np.ndarray, timestamp: str) -> dict:
+        """Analyze a frame by splitting into upper/lower halves in parallel."""
+        h = frame.shape[0]
+        upper_half = frame[: h // 2, :, :]
+        lower_half = frame[h // 2 :, :, :]
+
+        logger.info("Analyzing frame at %s (split mode)", timestamp)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            upper_future = executor.submit(
+                self._analyze_cropped,
+                upper_half, UPPER_HALF_USER_PROMPT, UPPER_HALF_SYSTEM_PROMPT, timestamp,
+            )
+            lower_future = executor.submit(
+                self._analyze_cropped,
+                lower_half, LOWER_HALF_USER_PROMPT, LOWER_HALF_SYSTEM_PROMPT, timestamp,
+            )
+            upper_result = upper_future.result()
+            lower_result = lower_future.result()
+
+        merged = self._merge_results(upper_result, lower_result)
+        logger.info("Analysis complete for frame at %s (split mode)", timestamp)
+        return merged
 
     def analyze_frame_from_memory_with_prompt(
         self, frame: np.ndarray, prompt: str, timestamp: str
