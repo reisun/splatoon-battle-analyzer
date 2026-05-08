@@ -1,6 +1,6 @@
 weights:
   kills: 3.0
-  score_count_gain: 0.0
+  score_count_gain: 0.1
 
 death_penalty: -3
 
