@@ -42,7 +42,7 @@ class FrameResult(BaseModel):
     score: int
     kills: int
     score_gain: int
-    special: int
+    special: bool
     is_dead: bool
     my_team_color: str = ""
     enemy_team_color: str = ""

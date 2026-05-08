@@ -154,7 +154,7 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
         return int(cfg.death_penalty)
     kills = max(1, min(10, result.get("kills", 1)))
     score_gain = max(1, min(10, result.get("score_gain", 1)))
-    special = max(1, min(10, result.get("special", 1)))
+    special = 10 if result.get("special", False) else 1
     return int(
         kills * cfg.weights.kills
         + score_gain * cfg.weights.score_gain
@@ -175,7 +175,7 @@ class FrameAnalysis:
     score: int
     kills: int
     score_gain: int
-    special: int
+    special: bool
     is_dead: bool
     my_team_color: str | None
     enemy_team_color: str | None
@@ -275,7 +275,7 @@ class HighlightDetector:
                 score=f.score,
                 kills=max(1, min(10, f.raw.get("kills", 1))),
                 score_gain=max(1, min(10, f.raw.get("score_gain", 1))),
-                special=max(1, min(10, f.raw.get("special", 1))),
+                special=bool(f.raw.get("special", False)),
                 is_dead=f.raw.get("is_dead", False),
                 my_team_color=f.raw.get("my_team_color", ""),
                 enemy_team_color=f.raw.get("enemy_team_color", ""),

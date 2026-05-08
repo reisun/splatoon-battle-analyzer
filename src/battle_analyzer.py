@@ -56,18 +56,19 @@ FRAME_ANALYSIS_SYSTEM_PROMPT = """\
 自チームの色はタイマー左側のイカランプの色で確認してください。
 相手チームの色はタイマー右側のイカランプの色で確認してください。
 
-■ 各項目を1（特になし）〜10（非常に激しい）でスコアリング:
-- kills: プレイヤーが敵を倒したか？画面下部の倒したプレイヤーの名前を確認
-- special: スペシャルウェポンが発動中、またはその効果が見えるか？
-- is_dead: 自プレイヤーがデス中か？（画面が暗転・復帰待ち状態ならtrue）
+■ 各項目:
+- kills: 「◯◯ をたおした！」の表示が複数ある場合はその数をカウントする。表示がない場合は0
+- special: 自プレイヤーがスペシャルウェポンが発動中、またはその効果が見えるか？
+- is_dead: 自プレイヤーがデス中か？(true/false)（画面が暗転・復帰待ち状態ならtrue）
 - remaining_time: 画面上部中央のタイマーに表示されている残り時間を必ず「M:SS」形式で記録すること
+- my_team_color および enemy_team_color: タイマー左側と右側のイカランプの色を記録すること（例: "オレンジ", "ブルー"）
+- my_team_count および enemy_team_count: 自チームと相手チームのカウントを記録すること(ゲームカウントが不明ならnull。)
 
 ■ 出力フォーマット（JSONのみ、他のテキスト不可）:
-{"kills": 1, "special": 1, "is_dead": false, "remaining_time": "4:30",
+{"kills": 1, "special": false, "is_dead": false, "remaining_time": "4:30",
 "my_team_color": "オレンジ", "enemy_team_color": "ブルー",
 "my_team_count": 85, "enemy_team_count": 72}
-スコアは全て1-10。不明なら1。is_deadはtrue/false。remaining_timeは必ずM:SS形式。\
-ゲームカウントが不明ならnull。"""
+"""
 
 FRAME_ANALYSIS_PROMPT = FRAME_ANALYSIS_SYSTEM_PROMPT
 
