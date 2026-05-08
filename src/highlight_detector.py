@@ -43,9 +43,9 @@ def _determine_match_duration(remaining_seconds: int) -> str:
 def _calc_score_gain(cur_count: int | None, future_avg: int | None) -> int:
     """現時点と未来平均のゲームカウント差分から score_gain を計算."""
     if cur_count is None or future_avg is None:
-        return 1
-    gain = (cur_count - future_avg) / 10 + 1
-    return max(1, min(10, int(gain)))
+        return 0
+    gain = (cur_count - future_avg) / 10
+    return max(0, min(10, int(gain)))
 
 
 FIRST_VALUE_FLOOR = 50
@@ -153,8 +153,8 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> int:
     if result.get("is_dead", False):
         return int(cfg.death_penalty)
     kills = max(0, min(4, result.get("kills", 0)))
-    score_gain = max(1, min(10, result.get("score_gain", 1)))
-    special = 10 if result.get("special", False) else 1
+    score_gain = max(0, min(10, result.get("score_gain", 0)))
+    special = 1 if result.get("special", False) else 0
     return int(
         kills * cfg.weights.kills
         + score_gain * cfg.weights.score_gain
@@ -274,7 +274,7 @@ class HighlightDetector:
                 timestamp_seconds=f.timestamp,
                 score=f.score,
                 kills=max(0, min(4, f.raw.get("kills", 0))),
-                score_gain=max(1, min(10, f.raw.get("score_gain", 1))),
+                score_gain=max(0, min(10, f.raw.get("score_gain", 0))),
                 special=bool(f.raw.get("special", False)),
                 is_dead=f.raw.get("is_dead", False),
                 my_team_color=f.raw.get("my_team_color", ""),
