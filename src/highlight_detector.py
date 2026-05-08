@@ -20,11 +20,10 @@ MAX_TOTAL_SECONDS = 60
 
 
 def _calc_score_count_gain(cur_count: int | None, future_avg: int | None) -> int:
-    """現時点と未来平均のゲームカウント差分から score_count_gain を計算."""
+    """現時点と未来平均のゲームカウント差分を返す."""
     if cur_count is None or future_avg is None:
         return 0
-    gain = (cur_count - future_avg) / 10
-    return max(0, min(10, int(gain)))
+    return max(0, cur_count - future_avg)
 
 
 FIRST_VALUE_FLOOR = 50
@@ -141,11 +140,12 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> ScoreBreak
         score_dead = int(cfg.death_penalty)
         return ScoreBreakdown(score=score_dead, score_kills=0, score_count_gain=0, score_dead=score_dead)
     kills = max(0, min(4, result.get("kills", 0)))
-    gain = max(0, min(10, result.get("score_count_gain", 0)))
+    gain = max(0, result.get("score_count_gain", 0))
     score_kills = int(kills * cfg.weights.kills)
-    score_count_gain = int(gain * cfg.weights.score_count_gain)
+    score_count_gain = int(1 + gain * cfg.weights.score_count_gain)
+    score = score_kills * score_count_gain
     return ScoreBreakdown(
-        score=score_kills + score_count_gain, score_kills=score_kills,
+        score=score, score_kills=score_kills,
         score_count_gain=score_count_gain, score_dead=0,
     )
 

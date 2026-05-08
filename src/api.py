@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.highlight_detector import FrameAnalysis, HighlightDetector
 from src.job_store import JobStatus, JobStore
+from src.scoring_config import load_scoring_config
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +52,22 @@ class FrameResult(BaseModel):
     enemy_team_count_raw: int | None
 
 
+class ScoringInfo(BaseModel):
+    description: str = "ポイント獲得中のキルがより選定されやすいスコア計算としています"
+    score: str = "score_kills * score_count_gain + score_dead"
+    score_kills: str = "kills * kills_weight"
+    score_count_gain: str = "1 + count_gain * count_gain_weight"
+    score_dead: str = "is_dead ? death_penalty : 0"
+    weights: dict = Field(default_factory=dict)
+    death_penalty: float = 0
+    count_gain_window_seconds: int = 30
+
+
 class HighlightResponse(BaseModel):
     video: str
     model: str
     highlights: list[SegmentResult]
+    scoring: ScoringInfo = Field(default_factory=ScoringInfo)
     frames: list[FrameResult] = Field(default_factory=list)
     scan_summary: dict
 
@@ -81,6 +94,15 @@ class JobStatusResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = "ok"
+
+
+def _build_scoring_info() -> ScoringInfo:
+    cfg = load_scoring_config()
+    return ScoringInfo(
+        weights={"kills": cfg.weights.kills, "score_count_gain": cfg.weights.score_count_gain},
+        death_penalty=cfg.death_penalty,
+        count_gain_window_seconds=cfg.score_count_gain_window_seconds,
+    )
 
 
 def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
@@ -147,6 +169,7 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
             )
             for h in highlights
         ],
+        scoring=_build_scoring_info(),
         frames=_to_frame_results(detector.all_frames),
         scan_summary=detector.scan_summary,
     )
@@ -197,6 +220,7 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
                 )
                 for h in highlights
             ],
+            scoring=_build_scoring_info(),
             frames=_to_frame_results(detector.all_frames),
             scan_summary=detector.scan_summary,
         )
