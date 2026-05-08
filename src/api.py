@@ -42,7 +42,6 @@ class FrameResult(BaseModel):
     score: int
     kills: int
     score_gain: int
-    special: bool
     is_dead: bool
     my_team_color: str = ""
     enemy_team_color: str = ""
@@ -50,7 +49,6 @@ class FrameResult(BaseModel):
     enemy_team_count: int | None
     my_team_count_raw: int | None
     enemy_team_count_raw: int | None
-    remaining_time: str | None = None
 
 
 class HighlightResponse(BaseModel):
@@ -92,7 +90,6 @@ def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
             score=f.score,
             kills=f.kills,
             score_gain=f.score_gain,
-            special=f.special,
             is_dead=f.is_dead,
             my_team_color=f.my_team_color or "",
             enemy_team_color=f.enemy_team_color or "",
@@ -100,7 +97,6 @@ def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
             enemy_team_count=f.enemy_team_count,
             my_team_count_raw=f.my_team_count_raw,
             enemy_team_count_raw=f.enemy_team_count_raw,
-            remaining_time=f.remaining_time,
         )
         for f in frames
     ]
