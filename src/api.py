@@ -53,7 +53,7 @@ class FrameResult(BaseModel):
 
 
 class ScoringInfo(BaseModel):
-    description: str = "ポイント獲得中のキルがより選定されやすいスコア計算としています"
+    description: str = "カウント上昇に絡むキルがより選定されやすいスコア計算としています"
     score: str = "score_kills * score_count_gain + score_dead"
     score_kills: str = "kills * kills_weight"
     score_count_gain: str = "1 + count_gain * count_gain_weight"
