@@ -55,18 +55,11 @@ UPPER_HALF_SYSTEM_PROMPT = """\
 - ゲームカウント回りの小さな数字:
     ルールごとに仕様が異なり複雑なため無視する。混同注意。
 
-■ チームカラーの確認方法:
-自チームの色はタイマー左側のイカランプの色で確認してください。
-相手チームの色はタイマー右側のイカランプの色で確認してください。
-
 ■ 各項目:
-- my_team_color / enemy_team_color: (文字列) タイマー左右のイカランプの色
 - my_team_count / enemy_team_count: (null, 0~100) 自チーム・相手チームのカウント。不明瞭な場合はnull
 
 ■ 出力フォーマット（JSONのみ、他のテキスト不可）:
 {
-  "my_team_color": string | null,
-  "enemy_team_color": string | null,
   "my_team_count": number | null,
   "enemy_team_count": number | null
 }
@@ -302,10 +295,7 @@ class BattleAnalyzer:
         if isinstance(upper, dict):
             merged.update(upper)
         else:
-            merged.update({
-                "my_team_color": None, "enemy_team_color": None,
-                "my_team_count": None, "enemy_team_count": None,
-            })
+            merged.update({"my_team_count": None, "enemy_team_count": None})
         if isinstance(lower, dict):
             merged.update(lower)
         else:

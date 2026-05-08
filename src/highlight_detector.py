@@ -153,8 +153,6 @@ class FrameAnalysis:
     kills: int
     score_gain: int
     is_dead: bool
-    my_team_color: str | None
-    enemy_team_color: str | None
     my_team_count: int | None
     enemy_team_count: int | None
     my_team_count_raw: int | None
@@ -238,8 +236,6 @@ class HighlightDetector:
                 kills=max(0, min(4, f.raw.get("kills", 0))),
                 score_gain=max(0, min(10, f.raw.get("score_gain", 0))),
                 is_dead=f.raw.get("is_dead", False),
-                my_team_color=f.raw.get("my_team_color", ""),
-                enemy_team_color=f.raw.get("enemy_team_color", ""),
                 my_team_count=f.raw.get("my_team_count"),
                 enemy_team_count=f.raw.get("enemy_team_count"),
                 my_team_count_raw=f.raw.get("my_team_count_raw"),
