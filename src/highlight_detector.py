@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-from src.battle_analyzer import BattleAnalyzer, build_frame_prompt
+from src.battle_analyzer import BattleAnalyzer
 from src.frame_extractor import extract_frames
 from src.scoring_config import ScoringConfig, load_scoring_config
 
@@ -202,15 +202,12 @@ class HighlightDetector:
         total_frames = len(frames)
         results: list[tuple[float, dict | str]] = [None] * total_frames  # type: ignore[list-item]
         done_count = [0]
-        prompt = build_frame_prompt()
 
         def _analyze_one(index: int) -> None:
             timestamp_sec = scan_start + index * self.interval
             ts_label = self._format_timestamp(timestamp_sec)
             try:
-                result = self.analyzer.analyze_frame_from_memory_with_prompt(
-                    frames[index], prompt, ts_label
-                )
+                result = self.analyzer.analyze_frame_split(frames[index], ts_label)
             except Exception:
                 logger.exception("Analysis failed for frame at %s", ts_label)
                 result = {"kills": 0}

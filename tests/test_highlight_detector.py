@@ -299,7 +299,7 @@ class TestDetectFlow:
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
-        analyzer.analyze_frame_from_memory_with_prompt.return_value = {
+        analyzer.analyze_frame_split.return_value = {
             "kills": 1,
             "score_gain": 1,
             "special": False,
@@ -326,23 +326,21 @@ class TestDetectFlow:
             "00m25s": 40,
         }
 
-        def mock_analyze(frame, prompt, timestamp):
+        def mock_analyze(frame, timestamp):
             count = count_map.get(timestamp, 100)
             if timestamp in ("00m05s", "00m10s", "00m15s"):
                 return {
-                    "kills": 5,
-                    "special": True,
+                    "kills": 4,
                     "my_team_count": count,
                 }
             return {
                 "kills": 1,
-                "special": False,
                 "my_team_count": count,
             }
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
-        analyzer.analyze_frame_from_memory_with_prompt.side_effect = mock_analyze
+        analyzer.analyze_frame_split.side_effect = mock_analyze
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         segments = detector.detect("/fake/video.mp4")
@@ -359,7 +357,7 @@ class TestDetectFlow:
 
         analyzer = MagicMock()
         analyzer.concurrency = 1
-        analyzer.analyze_frame_from_memory_with_prompt.return_value = {
+        analyzer.analyze_frame_split.return_value = {
             "kills": 1,
             "score_gain": 1,
             "special": False,
@@ -388,17 +386,16 @@ class TestDetectFlow:
 
         thread_ids: list[int] = []
 
-        def mock_analyze(frame, prompt, timestamp):
+        def mock_analyze(frame, timestamp):
             thread_ids.append(threading.current_thread().ident)
             return {
                 "kills": 1,
                 "score_gain": 1,
-                "special": False,
             }
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
-        analyzer.analyze_frame_from_memory_with_prompt.side_effect = mock_analyze
+        analyzer.analyze_frame_split.side_effect = mock_analyze
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4")
