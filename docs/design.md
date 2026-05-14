@@ -53,6 +53,7 @@
 | Frame Extractor (`src/frame_extractor.py`) | 動画からのフレーム抽出、画像保存 |
 | Battle Analyzer (`src/battle_analyzer.py`) | Claude Code CLI 呼び出し、プロンプト定義、レスポンスパース |
 | Highlight Detector (`src/highlight_detector.py`) | スライディングウィンドウによるハイライト区間検出 |
+| Match Scanner (`src/match_scanner.py`) | タイマー読み取りによる試合境界スキャン |
 | Job Store (`src/job_store.py`) | インメモリ非同期ジョブ管理（スレッドセーフ） |
 
 ## 3. モジュール構成
@@ -69,6 +70,7 @@ splatoon-battle-analyzer/
     frame_extractor.py       # フレーム抽出（OpenCV VideoCapture）
     battle_analyzer.py       # Claude Code CLI 呼び出し、プロンプト定義
     highlight_detector.py    # ハイライト検出（スライディングウィンドウ）
+    match_scanner.py         # 試合境界スキャン（タイマー読み取り）
     scoring_config.py        # スコアリング設定ローダー
     api.py                   # FastAPI エンドポイント
     job_store.py             # インメモリジョブストア
@@ -81,6 +83,7 @@ splatoon-battle-analyzer/
     test_cli.py
     test_api.py
     test_job_store.py
+    test_match_scanner.py
   docs/
     design.md                # 本ドキュメント
   Dockerfile
@@ -413,7 +416,89 @@ class StreamFrameSource(FrameSource):
 - 解析結果のキャッシュ（同一フレームの再解析回避）
 - ジョブストアの永続化（現在はインメモリのみ）
 
-## 11. 技術スタック
+## 11. 試合境界スキャンAPI
+
+### 11.1 目的
+
+長時間の録画動画（複数試合を含む）から各試合の開始位置と長さを検出する。オーケストレーター（splat-highlight-pilot）が試合ごとにハイライト分析を実行する前段として使用する。
+
+### 11.2 仕組み
+
+1. 動画から一定間隔（デフォルト30秒）でフレームを抽出し、上半分のみをクロップ
+2. 各フレームに対してタイマー読み取り専用プロンプトで Claude Vision を呼び出し
+3. タイマー残り時間（M:SS形式）をパースして秒数に変換
+4. ルール判別: 残り時間 > 3:00 なら5分ルール（300秒）、<= 3:00 なら3分ルール（180秒）
+5. 試合開始時刻を逆算: `frame_timestamp - (total_duration - timer_remaining)`
+6. 推定開始時刻が近い（30秒以内）フレームをクラスタリングし、同一試合とみなす
+7. 各クラスタの中央値を試合開始時刻として返す
+
+### 11.3 タイマー読み取りプロンプト
+
+既存の `UPPER_HALF_SYSTEM_PROMPT`（カウント読み取り用）とは別に、タイマー残り時間の数値のみを返す専用プロンプト `TIMER_SCAN_SYSTEM_PROMPT` を使用する。出力は `{"timer_remaining": "M:SS"}` または `{"timer_remaining": null}`。
+
+### 11.4 エンドポイント
+
+#### POST /analyze/matches/scan/jobs
+
+非同期ジョブとして試合境界スキャンを開始する。
+
+**リクエストボディ:**
+```json
+{
+  "file_path": "/path/to/video.mp4",
+  "interval": 30.0,
+  "model": null,
+  "concurrency": 4
+}
+```
+
+| フィールド | 型 | デフォルト | 説明 |
+|-----------|------|-----------|------|
+| `file_path` | string | (必須) | サーバー上の動画ファイル絶対パス |
+| `interval` | float | 30.0 | フレーム抽出間隔（秒） |
+| `model` | string or null | null | Claude モデル名 |
+| `concurrency` | int | 4 | 並行 API 呼び出し数 |
+
+**レスポンス:**
+```json
+{"job_id": "uuid-string"}
+```
+
+#### GET /analyze/matches/scan/jobs/{job_id}
+
+スキャンジョブの状態を取得する。
+
+**レスポンス:**
+```json
+{
+  "job_id": "uuid-string",
+  "status": "completed",
+  "progress": {
+    "frames_done": 20,
+    "frames_total": 20
+  },
+  "result": {
+    "matches": [
+      {
+        "start_seconds": 10.0,
+        "duration_seconds": 300,
+        "duration_type": "5min"
+      },
+      {
+        "start_seconds": 400.0,
+        "duration_seconds": 180,
+        "duration_type": "3min"
+      }
+    ]
+  },
+  "error": null,
+  "started_at": 1700000000.0
+}
+```
+
+試合が検出されなかった場合は `matches` が空配列になる。
+
+## 12. 技術スタック
 
 | 項目 | 技術 |
 |------|------|
@@ -426,7 +511,7 @@ class StreamFrameSource(FrameSource):
 | Lint/Format | ruff |
 | 実行環境 | Docker + docker compose |
 
-## 12. 環境構築
+## 13. 環境構築
 
 ```bash
 # 1. リポジトリクローン
