@@ -218,3 +218,125 @@ class TestGetJobStatus:
         assert data["status"] == "failed"
         assert data["error"] == "Something went wrong"
         assert data["result"] is None
+
+
+class TestCreateMatchScanJob:
+    """Tests for POST /analyze/matches/scan/jobs endpoint."""
+
+    def test_file_not_found(self) -> None:
+        """Return 404 when video file does not exist."""
+        response = client.post(
+            "/analyze/matches/scan/jobs",
+            json={"file_path": "/nonexistent/video.mp4"},
+        )
+        assert response.status_code == 404
+
+    @patch("src.api.check_api_key_available", return_value=False)
+    def test_cli_unavailable(self, mock_check: MagicMock, tmp_path: pytest.TempPathFactory) -> None:
+        """Return 503 when Claude CLI is unavailable."""
+        video = tmp_path / "test.mp4"
+        video.write_bytes(b"fake")
+        response = client.post(
+            "/analyze/matches/scan/jobs",
+            json={"file_path": str(video)},
+        )
+        assert response.status_code == 503
+
+    @patch("src.api.check_api_key_available", return_value=True)
+    @patch("src.api._run_scan_job")
+    def test_creates_job(
+        self, mock_run: MagicMock, mock_check: MagicMock, tmp_path: pytest.TempPathFactory
+    ) -> None:
+        """Return job_id on successful job creation."""
+        video = tmp_path / "test.mp4"
+        video.write_bytes(b"fake")
+        response = client.post(
+            "/analyze/matches/scan/jobs",
+            json={"file_path": str(video)},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "job_id" in data
+        assert len(data["job_id"]) == 36
+
+    def test_invalid_request(self) -> None:
+        """Return 422 on invalid request body."""
+        response = client.post("/analyze/matches/scan/jobs", json={})
+        assert response.status_code == 422
+
+
+class TestGetMatchScanJobStatus:
+    """Tests for GET /analyze/matches/scan/jobs/{job_id} endpoint."""
+
+    def test_job_not_found(self) -> None:
+        """Return 404 for nonexistent job."""
+        response = client.get("/analyze/matches/scan/jobs/nonexistent-id")
+        assert response.status_code == 404
+
+    def test_queued_job(self) -> None:
+        """Return queued status for newly created job."""
+        job = job_store.create()
+        response = client.get(f"/analyze/matches/scan/jobs/{job.job_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == job.job_id
+        assert data["status"] == "queued"
+        assert data["progress"] is None
+        assert data["result"] is None
+        assert data["error"] is None
+
+    def test_running_job_with_progress(self) -> None:
+        """Return running status with progress info."""
+        job = job_store.create()
+        job_store.mark_running(job.job_id)
+        job_store.update_progress(job.job_id, phase=1, frames_done=5, frames_total=20)
+
+        response = client.get(f"/analyze/matches/scan/jobs/{job.job_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "running"
+        assert data["progress"]["frames_done"] == 5
+        assert data["progress"]["frames_total"] == 20
+        assert data["started_at"] is not None
+
+    def test_completed_job_with_results(self) -> None:
+        """Return completed status with match results."""
+        job = job_store.create()
+        job_store.mark_running(job.job_id)
+        result = {
+            "matches": [
+                {
+                    "start_seconds": 10.0,
+                    "duration_seconds": 300,
+                    "duration_type": "5min",
+                },
+                {
+                    "start_seconds": 400.0,
+                    "duration_seconds": 180,
+                    "duration_type": "3min",
+                },
+            ],
+        }
+        job_store.mark_completed(job.job_id, result)
+
+        response = client.get(f"/analyze/matches/scan/jobs/{job.job_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "completed"
+        assert len(data["result"]["matches"]) == 2
+        assert data["result"]["matches"][0]["duration_type"] == "5min"
+        assert data["result"]["matches"][1]["duration_type"] == "3min"
+        assert data["progress"] is not None
+
+    def test_failed_job(self) -> None:
+        """Return failed status with error message."""
+        job = job_store.create()
+        job_store.mark_running(job.job_id)
+        job_store.mark_failed(job.job_id, "Scan failed")
+
+        response = client.get(f"/analyze/matches/scan/jobs/{job.job_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "failed"
+        assert data["error"] == "Scan failed"
+        assert data["result"] is None

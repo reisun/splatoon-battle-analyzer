@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.highlight_detector import FrameAnalysis, HighlightDetector
 from src.job_store import JobStatus, JobStore
+from src.match_scanner import MatchInfo, MatchScanner
 from src.scoring_config import load_scoring_config
 
 logger = logging.getLogger(__name__)
@@ -249,6 +250,115 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
         result = HighlightResponse(**job.result)
 
     return JobStatusResponse(
+        job_id=job.job_id,
+        status=job.status.value,
+        progress=progress,
+        result=result,
+        error=job.error,
+        started_at=job.started_at,
+    )
+
+
+# --- Match Boundary Scan ---
+
+
+class MatchScanRequest(BaseModel):
+    file_path: str = Field(description="Absolute path to the video file on server")
+    interval: float = Field(default=30.0, description="Frame scan interval (seconds)")
+    model: str | None = Field(default=None, description="Claude model name")
+    concurrency: int = Field(default=4, description="Concurrent API calls")
+
+
+class MatchResult(BaseModel):
+    start_seconds: float
+    duration_seconds: int
+    duration_type: str
+
+
+class MatchScanResponse(BaseModel):
+    matches: list[MatchResult]
+
+
+class MatchScanJobCreateResponse(BaseModel):
+    job_id: str
+
+
+class MatchScanJobProgressResponse(BaseModel):
+    frames_done: int
+    frames_total: int
+
+
+class MatchScanJobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: MatchScanJobProgressResponse | None = None
+    result: MatchScanResponse | None = None
+    error: str | None = None
+    started_at: float | None = None
+
+
+@app.post("/analyze/matches/scan/jobs", response_model=MatchScanJobCreateResponse)
+async def create_match_scan_job(request: MatchScanRequest) -> MatchScanJobCreateResponse:
+    """Create an async match boundary scan job."""
+    video_path = Path(request.file_path)
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail=f"Video file not found: {request.file_path}")
+
+    if not check_api_key_available():
+        raise HTTPException(status_code=503, detail="Claude CLI is not available")
+
+    job = job_store.create()
+    asyncio.get_event_loop().run_in_executor(None, _run_scan_job, job.job_id, request)
+    return MatchScanJobCreateResponse(job_id=job.job_id)
+
+
+def _run_scan_job(job_id: str, request: MatchScanRequest) -> None:
+    job_store.mark_running(job_id)
+    try:
+        analyzer = BattleAnalyzer(model=request.model, concurrency=request.concurrency)
+        scanner = MatchScanner(analyzer=analyzer, interval=request.interval)
+
+        def on_progress(frames_done: int, frames_total: int) -> None:
+            job_store.update_progress(job_id, 1, frames_done, frames_total)
+
+        matches = scanner.scan(
+            video_path=Path(request.file_path),
+            progress_callback=on_progress,
+        )
+
+        result = MatchScanResponse(
+            matches=[
+                MatchResult(
+                    start_seconds=m.start_seconds,
+                    duration_seconds=m.duration_seconds,
+                    duration_type=m.duration_type,
+                )
+                for m in matches
+            ],
+        )
+        job_store.mark_completed(job_id, result.model_dump())
+    except Exception as e:
+        job_store.mark_failed(job_id, str(e))
+
+
+@app.get("/analyze/matches/scan/jobs/{job_id}", response_model=MatchScanJobStatusResponse)
+async def get_match_scan_job_status(job_id: str) -> MatchScanJobStatusResponse:
+    """Get the status of a match boundary scan job."""
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    progress = None
+    result = None
+    if job.status in (JobStatus.RUNNING, JobStatus.COMPLETED):
+        progress = MatchScanJobProgressResponse(
+            frames_done=job.progress.frames_done,
+            frames_total=job.progress.frames_total,
+        )
+    if job.status == JobStatus.COMPLETED and job.result:
+        result = MatchScanResponse(**job.result)
+
+    return MatchScanJobStatusResponse(
         job_id=job.job_id,
         status=job.status.value,
         progress=progress,
