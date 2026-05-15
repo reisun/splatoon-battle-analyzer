@@ -316,6 +316,15 @@ class TestGetMatchScanJobStatus:
                     "duration_type": "3min",
                 },
             ],
+            "readings": [
+                {
+                    "frame_timestamp": 60.0,
+                    "timer_seconds": 250.0,
+                    "total_duration": 300,
+                    "duration_type": "5min",
+                    "match_start": 10.0,
+                },
+            ],
         }
         job_store.mark_completed(job.job_id, result)
 
@@ -326,6 +335,8 @@ class TestGetMatchScanJobStatus:
         assert len(data["result"]["matches"]) == 2
         assert data["result"]["matches"][0]["duration_type"] == "5min"
         assert data["result"]["matches"][1]["duration_type"] == "3min"
+        assert len(data["result"]["readings"]) == 1
+        assert data["result"]["readings"][0]["frame_timestamp"] == 60.0
         assert data["progress"] is not None
 
     def test_failed_job(self) -> None:
