@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.highlight_detector import FrameAnalysis, HighlightDetector
 from src.job_store import JobStatus, JobStore
-from src.match_scanner import MatchInfo, MatchScanner
+from src.match_scanner import MatchInfo, MatchScanner, ScanResult
 from src.scoring_config import load_scoring_config
 
 logger = logging.getLogger(__name__)
@@ -275,8 +275,17 @@ class MatchResult(BaseModel):
     duration_type: str
 
 
+class TimerReadingResult(BaseModel):
+    frame_timestamp: float
+    timer_seconds: float
+    total_duration: int
+    duration_type: str
+    match_start: float
+
+
 class MatchScanResponse(BaseModel):
     matches: list[MatchResult]
+    readings: list[TimerReadingResult] = Field(default_factory=list)
 
 
 class MatchScanJobCreateResponse(BaseModel):
@@ -321,7 +330,7 @@ def _run_scan_job(job_id: str, request: MatchScanRequest) -> None:
         def on_progress(frames_done: int, frames_total: int) -> None:
             job_store.update_progress(job_id, 1, frames_done, frames_total)
 
-        matches = scanner.scan(
+        scan_result = scanner.scan(
             video_path=Path(request.file_path),
             progress_callback=on_progress,
         )
@@ -333,7 +342,17 @@ def _run_scan_job(job_id: str, request: MatchScanRequest) -> None:
                     duration_seconds=m.duration_seconds,
                     duration_type=m.duration_type,
                 )
-                for m in matches
+                for m in scan_result.matches
+            ],
+            readings=[
+                TimerReadingResult(
+                    frame_timestamp=r.frame_timestamp,
+                    timer_seconds=r.timer_seconds,
+                    total_duration=r.total_duration,
+                    duration_type=r.duration_type,
+                    match_start=r.match_start,
+                )
+                for r in scan_result.readings
             ],
         )
         job_store.mark_completed(job_id, result.model_dump())

@@ -1,7 +1,7 @@
 """Tests for match boundary scanner."""
 
 from src.match_scanner import (
-    _TimerReading,
+    TimerReading,
     calc_match_start,
     cluster_readings,
     determine_rule,
@@ -110,8 +110,8 @@ class TestClusterReadings:
         timer_sec: float,
         total: int = 300,
         dtype: str = "5min",
-    ) -> _TimerReading:
-        return _TimerReading(
+    ) -> TimerReading:
+        return TimerReading(
             frame_timestamp=frame_ts,
             timer_seconds=timer_sec,
             total_duration=total,
@@ -120,11 +120,13 @@ class TestClusterReadings:
         )
 
     def test_empty(self) -> None:
-        assert cluster_readings([]) == []
+        matches, resolved = cluster_readings([])
+        assert matches == []
+        assert resolved == []
 
     def test_single_reading(self) -> None:
         readings = [self._make_reading(120.0, 190.0)]
-        matches = cluster_readings(readings)
+        matches, _ = cluster_readings(readings)
         assert len(matches) == 1
         assert matches[0].duration_type == "5min"
         assert matches[0].duration_seconds == 300
@@ -137,8 +139,7 @@ class TestClusterReadings:
             self._make_reading(90.0, 210.0),  # start = 0
             self._make_reading(120.0, 180.1),  # start ~= 0 (within tolerance)
         ]
-        # All have start ~= 0, so they form one cluster
-        matches = cluster_readings(readings)
+        matches, _ = cluster_readings(readings)
         assert len(matches) == 1
         assert matches[0].start_seconds == 0.0
 
@@ -152,7 +153,7 @@ class TestClusterReadings:
             self._make_reading(430.0, 270.0),  # start = 430 - 30 = 400
             self._make_reading(460.0, 240.0),  # start = 460 - 60 = 400
         ]
-        matches = cluster_readings(readings)
+        matches, _ = cluster_readings(readings)
         assert len(matches) == 2
         assert matches[0].start_seconds == 10.0
         assert matches[1].start_seconds == 400.0
@@ -160,7 +161,7 @@ class TestClusterReadings:
     def test_negative_start_clamped(self) -> None:
         """Negative calculated start is clamped to 0."""
         readings = [self._make_reading(2.0, 295.0)]  # start = -3.0
-        matches = cluster_readings(readings)
+        matches, _ = cluster_readings(readings)
         assert len(matches) == 1
         assert matches[0].start_seconds == 0.0
 
@@ -170,11 +171,17 @@ class TestClusterReadings:
             # 5min match at ~0s
             self._make_reading(30.0, 270.0, 300, "5min"),
             self._make_reading(60.0, 240.0, 300, "5min"),
-            # 3min match at ~400s
-            self._make_reading(410.0, 170.0, 180, "3min"),  # start = 410-10=400
-            self._make_reading(440.0, 140.0, 180, "3min"),  # start = 440-40=400
+            self._make_reading(90.0, 210.0, 300, "5min"),
+            # 3min match at ~600s (far enough to not cluster with 5min)
+            # timer=170: 5min start=600-130=470, 3min start=600-10=590
+            # timer=140: 5min start=630-160=470, 3min start=630-40=590
+            # 3min cluster(590) has 2, 5min cluster(470) has 2
+            # but 5min match0(start=0) has 3 members — no confusion
+            self._make_reading(600.0, 170.0, 180, "3min"),
+            self._make_reading(630.0, 140.0, 180, "3min"),
+            self._make_reading(660.0, 110.0, 180, "3min"),
         ]
-        matches = cluster_readings(readings)
+        matches, _ = cluster_readings(readings)
         assert len(matches) == 2
         assert matches[0].duration_type == "5min"
         assert matches[1].duration_type == "3min"
@@ -186,5 +193,22 @@ class TestClusterReadings:
             self._make_reading(430.0, 270.0),  # start = 400
             self._make_reading(40.0, 270.0),  # start = 10
         ]
-        matches = cluster_readings(readings)
+        matches, _ = cluster_readings(readings)
         assert matches[0].start_seconds < matches[1].start_seconds
+
+    def test_ambiguous_timer_resolves_to_5min(self) -> None:
+        """Timer <= 3:00 in a 5min match should cluster with 5min readings."""
+        readings = [
+            # 5min match at ~14s: timer > 3:00
+            self._make_reading(20.0, 294.0),  # start = 20-(300-294) = 14
+            self._make_reading(40.0, 274.0),  # start = 14
+            self._make_reading(60.0, 254.0),  # start = 14
+            # Same match but timer <= 3:00 (ambiguous)
+            self._make_reading(160.0, 154.0),  # 5min: start=14, 3min: start=134
+            self._make_reading(180.0, 134.0),  # 5min: start=14, 3min: start=134
+        ]
+        matches, resolved = cluster_readings(readings)
+        assert len(matches) == 1
+        assert matches[0].duration_type == "5min"
+        assert matches[0].start_seconds == 14.0
+        assert len(resolved) == 5

@@ -104,8 +104,8 @@ def calc_match_start(frame_timestamp: float, timer_seconds: float, total_duratio
 
 
 @dataclass
-class _TimerReading:
-    """Internal: a single timer reading from one frame."""
+class TimerReading:
+    """A single timer reading from one frame."""
 
     frame_timestamp: float
     timer_seconds: float
@@ -114,40 +114,114 @@ class _TimerReading:
     match_start: float
 
 
-def cluster_readings(readings: list[_TimerReading]) -> list[MatchInfo]:
+@dataclass
+class ScanResult:
+    """Result of a match scan: detected matches and raw readings."""
+
+    matches: list[MatchInfo]
+    readings: list[TimerReading]
+
+
+def _expand_candidates(readings: list[TimerReading]) -> list[TimerReading]:
+    """Expand each reading into candidates for both 5min and 3min rules.
+
+    For readings where only one rule is possible (timer > 180s => must be 5min),
+    only that candidate is produced.  For ambiguous readings (timer <= 180s),
+    both 5min and 3min candidates are produced.  Clustering later picks the
+    consistent interpretation.
+    """
+    candidates: list[TimerReading] = []
+    for r in readings:
+        if r.timer_seconds > 180:
+            candidates.append(r)
+        else:
+            for total, dtype in [(300, "5min"), (180, "3min")]:
+                start = calc_match_start(
+                    r.frame_timestamp, r.timer_seconds, total
+                )
+                candidates.append(
+                    TimerReading(
+                        frame_timestamp=r.frame_timestamp,
+                        timer_seconds=r.timer_seconds,
+                        total_duration=total,
+                        duration_type=dtype,
+                        match_start=start,
+                    )
+                )
+    return candidates
+
+
+def cluster_readings(
+    readings: list[TimerReading],
+) -> tuple[list[MatchInfo], list[TimerReading]]:
     """Group timer readings into matches by clustering estimated start times.
 
+    For each frame, both 5min and 3min interpretations are considered.
+    Clustering selects the consistent interpretation automatically.
+
     Args:
-        readings: Sorted list of timer readings by frame_timestamp.
+        readings: List of timer readings.
 
     Returns:
-        List of MatchInfo sorted by start_seconds.
+        Tuple of (matches sorted by start_seconds, resolved readings).
     """
     if not readings:
-        return []
+        return [], []
 
-    sorted_readings = sorted(readings, key=lambda r: r.match_start)
+    candidates = _expand_candidates(readings)
+    sorted_candidates = sorted(candidates, key=lambda r: r.match_start)
 
-    clusters: list[list[_TimerReading]] = []
-    current_cluster: list[_TimerReading] = [sorted_readings[0]]
+    clusters: list[list[TimerReading]] = []
+    current_cluster: list[TimerReading] = [sorted_candidates[0]]
 
-    for reading in sorted_readings[1:]:
-        if abs(reading.match_start - current_cluster[-1].match_start) <= CLUSTER_TOLERANCE:
+    for reading in sorted_candidates[1:]:
+        prev = current_cluster[-1]
+        if abs(reading.match_start - prev.match_start) <= CLUSTER_TOLERANCE:
             current_cluster.append(reading)
         else:
             clusters.append(current_cluster)
             current_cluster = [reading]
     clusters.append(current_cluster)
 
+    # Count unambiguous readings (timer > 180 => must be 5min) per cluster.
+    unambiguous_count: dict[int, int] = {}
+    for ci, cluster in enumerate(clusters):
+        unambiguous_count[ci] = sum(
+            1 for r in cluster if r.timer_seconds > 180
+        )
+
+    def _cluster_priority(ci: int) -> tuple[int, int, int]:
+        """Higher = better: (size, has_unambiguous, prefer_shorter)."""
+        return (
+            len(clusters[ci]),
+            1 if unambiguous_count[ci] > 0 else 0,
+            1 if clusters[ci][0].total_duration == 180 else 0,
+        )
+
+    # Deduplicate: keep only the cluster each frame_timestamp belongs to
+    # with the best priority.
+    frame_best: dict[float, tuple[int, TimerReading]] = {}
+    for ci, cluster in enumerate(clusters):
+        for r in cluster:
+            prev = frame_best.get(r.frame_timestamp)
+            if prev is None or _cluster_priority(ci) > _cluster_priority(prev[0]):
+                frame_best[r.frame_timestamp] = (ci, r)
+
+    # Rebuild clusters using only best assignments
+    best_clusters: dict[int, list[TimerReading]] = {}
+    for ci, r in frame_best.values():
+        best_clusters.setdefault(ci, []).append(r)
+
     matches: list[MatchInfo] = []
-    for cluster in clusters:
+    for cluster in best_clusters.values():
         starts = [r.match_start for r in cluster]
         median_start = statistics.median(starts)
 
-        # Use the most common duration type in the cluster
         type_counts: dict[str, int] = {}
         for r in cluster:
-            type_counts[r.duration_type] = type_counts.get(r.duration_type, 0) + 1
+            type_counts[r.duration_type] = (
+                type_counts.get(r.duration_type, 0) + 1
+            )
         best_type = max(type_counts, key=type_counts.get)  # type: ignore[arg-type]
         best_duration = 300 if best_type == "5min" else 180
 
@@ -160,7 +234,11 @@ def cluster_readings(readings: list[_TimerReading]) -> list[MatchInfo]:
         )
 
     matches.sort(key=lambda m: m.start_seconds)
-    return matches
+    resolved = sorted(
+        [r for _, r in frame_best.values()],
+        key=lambda r: r.frame_timestamp,
+    )
+    return matches, resolved
 
 
 class MatchScanner:
@@ -180,7 +258,7 @@ class MatchScanner:
         self,
         video_path: str | Path,
         progress_callback: ScanProgressCallback | None = None,
-    ) -> list[MatchInfo]:
+    ) -> ScanResult:
         """Scan a video for match boundaries.
 
         Args:
@@ -188,7 +266,7 @@ class MatchScanner:
             progress_callback: Optional callback (frames_done, frames_total).
 
         Returns:
-            List of detected matches sorted by start_seconds.
+            ScanResult with detected matches and raw timer readings.
         """
         video_path = Path(video_path)
 
@@ -199,7 +277,7 @@ class MatchScanner:
         )
 
         total_frames = len(frames)
-        readings: list[_TimerReading | None] = [None] * total_frames
+        readings: list[TimerReading | None] = [None] * total_frames
         done_count = [0]
 
         def _analyze_one(index: int) -> None:
@@ -230,7 +308,7 @@ class MatchScanner:
             if timer_value is not None:
                 total_duration, duration_type = determine_rule(timer_value)
                 match_start = calc_match_start(timestamp_sec, timer_value, total_duration)
-                readings[index] = _TimerReading(
+                readings[index] = TimerReading(
                     frame_timestamp=timestamp_sec,
                     timer_seconds=timer_value,
                     total_duration=total_duration,
@@ -254,7 +332,8 @@ class MatchScanner:
             total_frames,
         )
 
-        return cluster_readings(valid_readings)
+        matches, resolved_readings = cluster_readings(valid_readings)
+        return ScanResult(matches=matches, readings=resolved_readings)
 
     @staticmethod
     def _format_timestamp(seconds: float) -> str:
