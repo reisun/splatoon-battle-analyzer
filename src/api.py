@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.highlight_detector import FrameAnalysis, HighlightDetector
@@ -40,6 +40,8 @@ class SegmentResult(BaseModel):
 
 
 class FrameResult(BaseModel):
+    model_config = {"coerce_numbers_to_str": False}
+
     timestamp_seconds: float
     score: int
     score_kills: int
@@ -51,6 +53,13 @@ class FrameResult(BaseModel):
     is_dead: bool
     my_team_count_raw: int | None
     enemy_team_count_raw: int | None
+
+    @field_validator("my_team_count_raw", "enemy_team_count_raw", mode="before")
+    @classmethod
+    def _round_count_raw(cls, v: object) -> int | None:
+        if v is None:
+            return None
+        return round(float(v))
 
 
 class ScoringInfo(BaseModel):
