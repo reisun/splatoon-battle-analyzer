@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.battle_analyzer import BattleAnalyzer
+from src.battle_analyzer import BattleAnalyzer, _half_resize
 from src.frame_extractor import extract_frames
 
 ScanProgressCallback = Callable[[int, int], None]  # (frames_done, frames_total)
@@ -284,7 +284,7 @@ class MatchScanner:
             timestamp_sec = index * self.interval
             ts_label = self._format_timestamp(timestamp_sec)
 
-            frame = frames[index]
+            frame = _half_resize(frames[index])
             h = frame.shape[0]
             upper_half = frame[: int(h * 0.3), :, :]
 

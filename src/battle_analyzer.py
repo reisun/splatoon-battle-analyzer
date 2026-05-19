@@ -28,6 +28,12 @@ MAX_POLL_ATTEMPTS = 900
 SHARED_TEMP_DIR = os.environ.get("SHARED_TEMP_DIR", "/shared-data/tmp")
 
 
+def _half_resize(frame: np.ndarray) -> np.ndarray:
+    """Resize frame to half resolution for token reduction."""
+    h, w = frame.shape[:2]
+    return cv2.resize(frame, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+
+
 def _save_temp_frame(frame: np.ndarray) -> str:
     """Save frame to a shared temporary JPEG file accessible by Agent Gateway."""
     os.makedirs(SHARED_TEMP_DIR, exist_ok=True)
@@ -308,6 +314,7 @@ class BattleAnalyzer:
 
     def analyze_frame_split(self, frame: np.ndarray, timestamp: str) -> dict:
         """Analyze a frame by splitting into upper/lower halves in parallel."""
+        frame = _half_resize(frame)
         h = frame.shape[0]
         upper_half = frame[: int(h * 0.3), :, :]
         lower_half = frame[int(h * 0.7) :, :, :]
@@ -331,6 +338,7 @@ class BattleAnalyzer:
 
     def analyze_frame_lower_only(self, frame: np.ndarray, timestamp: str) -> dict:
         """Analyze only the lower half (skip game count for Nawabari)."""
+        frame = _half_resize(frame)
         h = frame.shape[0]
         lower_half = frame[int(h * 0.7) :, :, :]
 
