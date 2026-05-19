@@ -1,4 +1,4 @@
-"""Single-pass highlight detection for Splatoon gameplay videos."""
+"""Two-pass highlight detection for Splatoon gameplay videos."""
 
 import logging
 from collections.abc import Callable
@@ -52,17 +52,11 @@ def _median_smooth(
     return result
 
 
-def _isotonic_decreasing(values: list[int | None]) -> list[int | None]:
-    """PAVアルゴリズムによる単調非増加回帰（L2最適）.
+DROP_THRESHOLD = 10
 
-    None値はスキップし、非null値に対してのみ回帰を適用。
-    ブロック結合時に加重平均を使用し、全体として二乗誤差最小の
-    単調非増加系列を返す。
-    """
-    non_null = [(i, v) for i, v in enumerate(values) if v is not None]
-    if not non_null:
-        return list(values)
 
+def _pav_segment(non_null: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """単一区間に対するPAV単調非増加回帰."""
     blocks: list[tuple[float, int, list[int]]] = []
     for idx, val in non_null:
         blocks.append((float(val), 1, [idx]))
@@ -72,12 +66,37 @@ def _isotonic_decreasing(values: list[int | None]) -> list[int | None]:
             s1, c1, i1 = blocks.pop()
             s2, c2, i2 = blocks.pop()
             blocks.append((s1 + s2, c1 + c2, i2 + i1))
+    fitted: list[tuple[int, int]] = []
+    for total, count, indices in blocks:
+        v = int(round(total / count))
+        for i in indices:
+            fitted.append((i, v))
+    return fitted
+
+
+def _isotonic_decreasing(values: list[int | None]) -> list[int | None]:
+    """PAVアルゴリズムによる単調非増加回帰（L2最適）.
+
+    None値はスキップし、非null値に対してのみ回帰を適用。
+    隣接する非null値の差がDROP_THRESHOLDを超える降下点で区間を分割し、
+    各区間で独立にPAVを適用することで急降下を追従する。
+    """
+    non_null = [(i, v) for i, v in enumerate(values) if v is not None]
+    if not non_null:
+        return list(values)
+
+    segments: list[list[tuple[int, int]]] = [[non_null[0]]]
+    for k in range(1, len(non_null)):
+        prev_val = non_null[k - 1][1]
+        cur_val = non_null[k][1]
+        if prev_val - cur_val > DROP_THRESHOLD:
+            segments.append([])
+        segments[-1].append(non_null[k])
 
     result: list[int | None] = list(values)
-    for total, count, indices in blocks:
-        fitted = int(round(total / count))
-        for i in indices:
-            result[i] = fitted
+    for seg in segments:
+        for idx, fitted_val in _pav_segment(seg):
+            result[idx] = fitted_val
     return result
 
 
@@ -198,9 +217,11 @@ class HighlightDetector:
         video_path: str | Path,
         start_seconds: float | None = None,
         end_seconds: float | None = None,
+        duration_type: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> list[HighlightSegment]:
         video_path = Path(video_path)
+        skip_upper = duration_type == "3min"
 
         frames = extract_frames(
             video_path=video_path,
@@ -212,37 +233,81 @@ class HighlightDetector:
 
         scan_start = start_seconds or 0.0
         total_frames = len(frames)
-        results: list[tuple[float, dict | str]] = [None] * total_frames  # type: ignore[list-item]
-        done_count = [0]
+        results: list[tuple[float, dict | str] | None] = [None] * total_frames
 
         def _analyze_one(index: int) -> None:
             timestamp_sec = scan_start + index * self.interval
             ts_label = self._format_timestamp(timestamp_sec)
             try:
-                result = self.analyzer.analyze_frame_split(frames[index], ts_label)
+                if skip_upper:
+                    result = self.analyzer.analyze_frame_lower_only(
+                        frames[index], ts_label,
+                    )
+                else:
+                    result = self.analyzer.analyze_frame_split(
+                        frames[index], ts_label,
+                    )
             except Exception:
                 logger.exception("Analysis failed for frame at %s", ts_label)
                 result = {"kills": 0}
             results[index] = (timestamp_sec, result)
 
+        # --- Pass 1: coarse scan (every other frame = 2x interval) ---
+        coarse_indices = list(range(0, total_frames, 2))
+        coarse_total = len(coarse_indices)
+        done_count = [0]
+
+        def _analyze_coarse(index: int) -> None:
+            _analyze_one(index)
             done_count[0] += 1
             if progress_callback:
-                progress_callback(1, done_count[0], total_frames)
+                progress_callback(1, done_count[0], coarse_total)
 
         with ThreadPoolExecutor(max_workers=self.analyzer.concurrency) as executor:
-            futures = [executor.submit(_analyze_one, i) for i in range(total_frames)]
+            futures = [executor.submit(_analyze_coarse, i) for i in coarse_indices]
             for future in as_completed(futures):
                 future.result()
 
+        # --- Determine dense scan regions ---
+        dense_indices = self._find_dense_indices(results, total_frames)
+        dense_total = len(dense_indices)
+        logger.info(
+            "Pass 1 done: %d coarse frames. Pass 2: %d dense frames needed.",
+            coarse_total, dense_total,
+        )
+
+        # --- Pass 2: dense scan (fill gaps in interesting regions) ---
+        done_count[0] = 0
+
+        def _analyze_dense(index: int) -> None:
+            _analyze_one(index)
+            done_count[0] += 1
+            if progress_callback:
+                progress_callback(2, done_count[0], dense_total)
+
+        if dense_indices:
+            with ThreadPoolExecutor(max_workers=self.analyzer.concurrency) as executor:
+                futures = [executor.submit(_analyze_dense, i) for i in dense_indices]
+                for future in as_completed(futures):
+                    future.result()
+
+        # --- Build final results (only analyzed frames) ---
+        analyzed: list[tuple[float, dict | str]] = []
+        for i in range(total_frames):
+            if results[i] is not None:
+                analyzed.append(results[i])  # type: ignore[arg-type]
+
         battle_count = sum(
-            1 for _, r in results if isinstance(r, dict) and r.get("scene") != "other"
+            1 for _, r in analyzed if isinstance(r, dict) and r.get("scene") != "other"
         )
         self.scan_summary = {
-            "total_frames": total_frames,
+            "total_frames": len(analyzed),
+            "coarse_frames": coarse_total,
+            "dense_frames": dense_total,
             "battle_frames": battle_count,
         }
 
-        scored = self._score_frames(results)
+        scored = self._score_frames(analyzed)
         self.all_frames = [
             FrameAnalysis(
                 timestamp_seconds=f.timestamp,
@@ -270,6 +335,34 @@ class HighlightDetector:
                 remaining -= dur
 
         return budget_segments
+
+    @staticmethod
+    def _find_dense_indices(
+        results: list[tuple[float, dict | str] | None],
+        total_frames: int,
+    ) -> list[int]:
+        """Pass 1の結果から、Pass 2で密スキャンすべき奇数インデックスを返す."""
+        interesting_coarse: set[int] = set()
+        for i in range(0, total_frames, 2):
+            r = results[i]
+            if r is None:
+                continue
+            _, data = r
+            if not isinstance(data, dict):
+                continue
+            if data.get("kills", 0) > 0 or data.get("is_dead", False):
+                interesting_coarse.add(i)
+
+        dense: set[int] = set()
+        for ci in interesting_coarse:
+            for neighbor in (ci - 2, ci, ci + 2):
+                odd = neighbor + 1
+                if 0 <= odd < total_frames and results[odd] is None:
+                    dense.add(odd)
+                odd_before = neighbor - 1
+                if 0 <= odd_before < total_frames and results[odd_before] is None:
+                    dense.add(odd_before)
+        return sorted(dense)
 
     def _score_frames(self, results: list[tuple[float, dict | str]]) -> list[_ScoredFrame]:
         cfg = load_scoring_config()

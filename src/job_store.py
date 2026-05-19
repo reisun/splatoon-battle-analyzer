@@ -51,13 +51,22 @@ class JobStore:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def update_progress(self, job_id: str, phase: int, frames_done: int, frames_total: int) -> None:
+    def update_progress(
+        self,
+        job_id: str,
+        phase: int,
+        frames_done: int,
+        frames_total: int,
+        phase_total: int | None = None,
+    ) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
             if job:
                 job.progress.phase = phase
                 job.progress.frames_done = frames_done
                 job.progress.frames_total = frames_total
+                if phase_total is not None:
+                    job.progress.phase_total = phase_total
 
     def mark_running(self, job_id: str) -> None:
         with self._lock:

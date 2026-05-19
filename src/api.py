@@ -31,6 +31,7 @@ class HighlightRequest(BaseModel):
     interval: float = Field(default=5.0, description="Frame scan interval (seconds)")
     model: str | None = Field(default=None, description="Claude model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
+    duration_type: str | None = Field(default=None, description="Match rule type (5min/3min)")
 
 
 class SegmentResult(BaseModel):
@@ -164,6 +165,7 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
             video_path=video_path,
             start_seconds=request.start,
             end_seconds=request.end,
+            duration_type=request.duration_type,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -210,12 +212,13 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
         )
 
         def on_progress(phase: int, frames_done: int, frames_total: int) -> None:
-            job_store.update_progress(job_id, phase, frames_done, frames_total)
+            job_store.update_progress(job_id, phase, frames_done, frames_total, phase_total=2)
 
         highlights = detector.detect(
             video_path=Path(request.file_path),
             start_seconds=request.start,
             end_seconds=request.end,
+            duration_type=request.duration_type,
             progress_callback=on_progress,
         )
 
