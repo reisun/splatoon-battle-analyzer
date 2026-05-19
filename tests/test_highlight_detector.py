@@ -383,8 +383,11 @@ class TestDetectFlow:
         detector.detect("/fake/video.mp4", progress_callback=on_progress)
 
         assert len(progress_calls) == 3
-        assert all(c[0] == 1 for c in progress_calls)
-        assert all(c[2] == 3 for c in progress_calls)
+        coarse_calls = [c for c in progress_calls if c[0] == 1]
+        dense_calls = [c for c in progress_calls if c[0] == 2]
+        assert len(coarse_calls) == 2
+        assert all(c[2] == 2 for c in coarse_calls)
+        assert len(dense_calls) == 1
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
@@ -682,3 +685,32 @@ class TestNormalizeCounts:
         # 誤読後のフレームが誤読値に固定されないこと
         assert results[6][1]["my_team_count"] >= 50
         assert results[7][1]["my_team_count"] >= 50
+
+    def test_steep_descent_tracked(self) -> None:
+        """エリアKOの急降下(100→2)が正規化後も追従される."""
+        results = [
+            (0.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (5.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (10.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (15.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (20.0, {"my_team_count": 100, "enemy_team_count": 100}),
+            (25.0, {"my_team_count": 70, "enemy_team_count": 47}),
+            (30.0, {"my_team_count": 45, "enemy_team_count": 52}),
+            (35.0, {"my_team_count": 35, "enemy_team_count": 45}),
+            (40.0, {"my_team_count": 27, "enemy_team_count": 45}),
+            (45.0, {"my_team_count": 18, "enemy_team_count": 45}),
+            (50.0, {"my_team_count": 10, "enemy_team_count": 45}),
+            (55.0, {"my_team_count": 2, "enemy_team_count": 45}),
+            (60.0, {"my_team_count": None, "enemy_team_count": None}),
+            (65.0, {"my_team_count": None, "enemy_team_count": None}),
+        ]
+        _normalize_counts(results)
+        assert results[11][1]["my_team_count"] <= 10
+        assert results[7][1]["my_team_count"] <= 40
+        my_counts = [
+            r["my_team_count"]
+            for _, r in results
+            if isinstance(r, dict) and r["my_team_count"] is not None
+        ]
+        for i in range(1, len(my_counts)):
+            assert my_counts[i] <= my_counts[i - 1], f"not monotone at {i}"

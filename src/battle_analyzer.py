@@ -39,7 +39,7 @@ def _save_temp_frame(frame: np.ndarray) -> str:
 
 UPPER_HALF_SYSTEM_PROMPT = """\
 あなたはスプラトゥーンのゲーム画面の上部を分析する専門AIです。
-この画像はゲーム画面の上半分のみをクロップしたものです。
+この画像はゲーム画面の上部30%のみをクロップしたものです。
 以下のルールに従ってJSON形式で回答してください。
 
 ■ UI要素の位置:
@@ -52,6 +52,10 @@ UPPER_HALF_SYSTEM_PROMPT = """\
 - タイマーの下:
     ゲームカウント。自チームの色と相手チームの色の２つ
     カウントの上に小さく「のこり」と表示されている
+    ※ ヤグラ・ホコルールの場合:
+      自チームのカウントバーは中央から右へ進行する
+      敵チームのカウントバーは中央から左へ進行する
+      （オブジェクトを敵陣に押し込むゲーム性のため）
 - ゲームカウント回りの小さな数字:
     ルールごとに仕様が異なり複雑なため無視する。混同注意。
 
@@ -67,7 +71,7 @@ UPPER_HALF_SYSTEM_PROMPT = """\
 
 LOWER_HALF_SYSTEM_PROMPT = """\
 あなたはスプラトゥーンのゲーム画面の下部を分析する専門AIです。
-この画像はゲーム画面の下半分のみをクロップしたものです。
+この画像はゲーム画面の下部30%のみをクロップしたものです。
 以下のルールに従ってJSON形式で回答してください。
 
 ■ UI要素の位置:
@@ -90,8 +94,8 @@ LOWER_HALF_SYSTEM_PROMPT = """\
 }
 """
 
-UPPER_HALF_USER_PROMPT = "この画像（ゲーム画面の上半分）を分析してJSON形式で回答してください。"
-LOWER_HALF_USER_PROMPT = "この画像（ゲーム画面の下半分）を分析してJSON形式で回答してください。"
+UPPER_HALF_USER_PROMPT = "この画像（ゲーム画面の上部30%）を分析してJSON形式で回答してください。"
+LOWER_HALF_USER_PROMPT = "この画像（ゲーム画面の下部30%）を分析してJSON形式で回答してください。"
 
 FRAME_ANALYSIS_SYSTEM_PROMPT = UPPER_HALF_SYSTEM_PROMPT
 FULL_FRAME_USER_PROMPT = "この画像を分析してJSON形式で回答してください。"
@@ -305,8 +309,8 @@ class BattleAnalyzer:
     def analyze_frame_split(self, frame: np.ndarray, timestamp: str) -> dict:
         """Analyze a frame by splitting into upper/lower halves in parallel."""
         h = frame.shape[0]
-        upper_half = frame[: h // 2, :, :]
-        lower_half = frame[h // 2 :, :, :]
+        upper_half = frame[: int(h * 0.3), :, :]
+        lower_half = frame[int(h * 0.7) :, :, :]
 
         logger.info("Analyzing frame at %s (split mode)", timestamp)
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -323,6 +327,19 @@ class BattleAnalyzer:
 
         merged = self._merge_results(upper_result, lower_result)
         logger.info("Analysis complete for frame at %s (split mode)", timestamp)
+        return merged
+
+    def analyze_frame_lower_only(self, frame: np.ndarray, timestamp: str) -> dict:
+        """Analyze only the lower half (skip game count for Nawabari)."""
+        h = frame.shape[0]
+        lower_half = frame[int(h * 0.7) :, :, :]
+
+        logger.info("Analyzing frame at %s (lower-only mode)", timestamp)
+        lower_result = self._analyze_cropped(
+            lower_half, LOWER_HALF_USER_PROMPT, LOWER_HALF_SYSTEM_PROMPT, timestamp,
+        )
+        merged = self._merge_results({}, lower_result)
+        logger.info("Analysis complete for frame at %s (lower-only mode)", timestamp)
         return merged
 
     def analyze_frame_from_memory_with_prompt(
