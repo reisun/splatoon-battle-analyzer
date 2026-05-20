@@ -147,10 +147,10 @@ def _normalize_counts(
 
 @dataclass
 class ScoreBreakdown:
-    score: int
-    score_kills: int
+    score: float
+    score_kills: float
     score_count_gain: float
-    score_dead: int
+    score_dead: float
     enemy_score_gain: float = 0.0
 
 
@@ -160,24 +160,24 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> ScoreBreak
         cfg = load_scoring_config()
     enemy_score_gain = float(result.get("enemy_score_gain", 0.0))
     if result.get("is_dead", False):
-        score_dead = int(cfg.death_penalty)
+        score_dead = cfg.death_penalty
         return ScoreBreakdown(
             score=score_dead,
-            score_kills=0,
+            score_kills=0.0,
             score_count_gain=0.0,
             score_dead=score_dead,
             enemy_score_gain=enemy_score_gain,
         )
     kills = max(0, min(4, result.get("kills", 0)))
     gain = max(0.0, float(result.get("score_count_gain", 0)))
-    score_kills = int(kills * cfg.weights.kills)
+    score_kills = kills * cfg.weights.kills
     score_count_gain = 1 + gain * cfg.weights.score_count_gain
-    score = int(score_kills * score_count_gain)
+    score = score_kills * score_count_gain
     return ScoreBreakdown(
         score=score,
         score_kills=score_kills,
         score_count_gain=score_count_gain,
-        score_dead=0,
+        score_dead=0.0,
         enemy_score_gain=enemy_score_gain,
     )
 
@@ -185,7 +185,7 @@ def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> ScoreBreak
 @dataclass
 class _ScoredFrame:
     timestamp: float
-    score: int
+    score: float
     breakdown: ScoreBreakdown
     raw: dict
 
@@ -193,10 +193,10 @@ class _ScoredFrame:
 @dataclass
 class FrameAnalysis:
     timestamp_seconds: float
-    score: int
-    score_kills: int
+    score: float
+    score_kills: float
     score_count_gain: float
-    score_dead: int
+    score_dead: float
     my_team_count: int | None
     enemy_team_count: int | None
     kills: int
@@ -204,6 +204,7 @@ class FrameAnalysis:
     my_team_count_raw: int | None
     enemy_team_count_raw: int | None
     enemy_score_gain: float = 0.0
+    has_count_rail: bool | None = None
 
 
 @dataclass
@@ -293,6 +294,7 @@ class HighlightDetector:
             "phase_a_frames": total,
             "phase_b_frames": 0,
             "total_frames": total,
+            "count_swapped": False,
         }
         return self._finalize(results)
 
@@ -338,6 +340,26 @@ class HighlightDetector:
 
         # Score Phase A to get score_count_gain values
         scored_a = self._score_frames(list(results_a))
+
+        # --- Count rail detection -> swap my/enemy counts ---
+        rail_count = sum(
+            1 for _, r in results_a
+            if isinstance(r, dict) and r.get("has_count_rail", False)
+        )
+        count_swapped = rail_count > total_a / 2
+        if count_swapped:
+            for _, r in results_a:
+                if isinstance(r, dict):
+                    my = r.get("my_team_count")
+                    enemy = r.get("enemy_team_count")
+                    r["my_team_count"] = enemy
+                    r["enemy_team_count"] = my
+                    my_raw = r.get("my_team_count_raw")
+                    enemy_raw = r.get("enemy_team_count_raw")
+                    r["my_team_count_raw"] = enemy_raw
+                    r["enemy_team_count_raw"] = my_raw
+            # Re-score after swap
+            scored_a = self._score_frames(list(results_a))
 
         # --- Determine Phase B regions (score_count_gain > 1 or enemy_score_gain > 1) ---
         interesting_timestamps: set[float] = set()
@@ -439,6 +461,7 @@ class HighlightDetector:
             "phase_a_frames": total_a,
             "phase_b_frames": phase_b_total,
             "total_frames": len(merged_results),
+            "count_swapped": count_swapped,
         }
         return self._finalize(merged_results)
 
@@ -459,6 +482,7 @@ class HighlightDetector:
                 my_team_count_raw=f.raw.get("my_team_count_raw"),
                 enemy_team_count_raw=f.raw.get("enemy_team_count_raw"),
                 enemy_score_gain=f.breakdown.enemy_score_gain,
+                has_count_rail=f.raw.get("has_count_rail"),
             )
             for f in scored
         ]
@@ -492,7 +516,7 @@ class HighlightDetector:
 
         scored: list[_ScoredFrame] = []
         for i, (timestamp, result) in enumerate(sorted_results):
-            breakdown = ScoreBreakdown(score=0, score_kills=0, score_count_gain=0.0, score_dead=0)
+            breakdown = ScoreBreakdown(score=0.0, score_kills=0.0, score_count_gain=0.0, score_dead=0.0)
             raw: dict = {}
             if isinstance(result, dict):
                 raw = result
@@ -540,7 +564,7 @@ class HighlightDetector:
                 HighlightSegment(
                     start_seconds=scored[best_idx].timestamp,
                     end_seconds=scored[end_idx].timestamp + self.interval,
-                    peak_intensity=best_total,
+                    peak_intensity=int(best_total),
                 )
             )
 

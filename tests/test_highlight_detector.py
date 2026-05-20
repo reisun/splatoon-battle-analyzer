@@ -30,61 +30,61 @@ class TestComputeScore:
     def test_all_ones(self) -> None:
         result = {"kills": 1, "score_count_gain": 1}
         b = _compute_score(result, _DEFAULT_CFG)
-        # score_kills=1*1.0=1, score_count_gain=1+1*1.0=2.0, score=int(1*2.0)=2
-        assert b.score == 2
-        assert b.score_kills == 1
+        # score_kills=1*1.0=1.0, score_count_gain=1+1*1.0=2.0, score=1.0*2.0=2.0
+        assert b.score == 2.0
+        assert b.score_kills == 1.0
         assert b.score_count_gain == 2.0
-        assert b.score_dead == 0
+        assert b.score_dead == 0.0
 
     def test_all_max(self) -> None:
         result = {"kills": 4, "score_count_gain": 10}
-        # score_kills=4, score_count_gain=1+10=11.0, score=int(4*11.0)=44
-        assert _compute_score(result, _DEFAULT_CFG).score == 44
+        # score_kills=4.0, score_count_gain=1+10=11.0, score=4.0*11.0=44.0
+        assert _compute_score(result, _DEFAULT_CFG).score == 44.0
 
     def test_mixed_values(self) -> None:
         result = {"kills": 3, "score_count_gain": 3}
-        # score_kills=3, score_count_gain=1+3=4.0, score=int(3*4.0)=12
-        assert _compute_score(result, _DEFAULT_CFG).score == 12
+        # score_kills=3.0, score_count_gain=1+3=4.0, score=3.0*4.0=12.0
+        assert _compute_score(result, _DEFAULT_CFG).score == 12.0
 
     def test_missing_keys_default_to_zero(self) -> None:
-        # score_kills=0, score_count_gain=1.0, score=0
-        assert _compute_score({}, _DEFAULT_CFG).score == 0
+        # score_kills=0.0, score_count_gain=1.0, score=0.0
+        assert _compute_score({}, _DEFAULT_CFG).score == 0.0
 
     def test_kills_zero_is_valid(self) -> None:
         result = {"kills": 0, "score_count_gain": 1}
-        # score_kills=0, score=0
-        assert _compute_score(result, _DEFAULT_CFG).score == 0
+        # score_kills=0.0, score=0.0
+        assert _compute_score(result, _DEFAULT_CFG).score == 0.0
 
     def test_clamps_above_four(self) -> None:
         result = {"kills": 99, "score_count_gain": 1}
-        # kills clamped to 4, score_kills=4, score_count_gain=2.0, score=int(4*2.0)=8
-        assert _compute_score(result, _DEFAULT_CFG).score == 8
+        # kills clamped to 4, score_kills=4.0, score_count_gain=2.0, score=4.0*2.0=8.0
+        assert _compute_score(result, _DEFAULT_CFG).score == 8.0
 
     def test_is_dead_returns_penalty_only(self) -> None:
         result = {"kills": 5, "score_count_gain": 3, "is_dead": True}
         b = _compute_score(result, _DEFAULT_CFG)
-        assert b.score == int(0.5)
-        assert b.score_kills == 0
+        assert b.score == 0.5
+        assert b.score_kills == 0.0
         assert b.score_count_gain == 0.0
-        assert b.score_dead == int(0.5)
+        assert b.score_dead == 0.5
 
     def test_is_dead_false_no_penalty(self) -> None:
         result = {"kills": 3, "score_count_gain": 3, "is_dead": False}
-        # score_kills=3, score_count_gain=4.0, score=int(3*4.0)=12
-        assert _compute_score(result, _DEFAULT_CFG).score == 12
+        # score_kills=3.0, score_count_gain=4.0, score=3.0*4.0=12.0
+        assert _compute_score(result, _DEFAULT_CFG).score == 12.0
 
     def test_custom_weights(self) -> None:
         cfg = ScoringConfig(
             weights=ScoringWeights(kills=1.5, score_count_gain=0.5),
         )
         result = {"kills": 4, "score_count_gain": 3}
-        # score_kills=int(4*1.5)=6, score_count_gain=1+3*0.5=2.5, score=int(6*2.5)=15
-        assert _compute_score(result, cfg).score == 15
+        # score_kills=4*1.5=6.0, score_count_gain=1+3*0.5=2.5, score=6.0*2.5=15.0
+        assert _compute_score(result, cfg).score == 15.0
 
     def test_custom_death_penalty(self) -> None:
         cfg = ScoringConfig(death_penalty=3)
         result = {"kills": 10, "score_count_gain": 1, "is_dead": True}
-        assert _compute_score(result, cfg).score == 3
+        assert _compute_score(result, cfg).score == 3.0
 
     def test_enemy_score_gain_in_breakdown(self) -> None:
         """enemy_score_gain is passed through to breakdown."""
@@ -99,8 +99,8 @@ class TestComputeScore:
         assert isinstance(b.score_count_gain, float)
         # 1 + 3.5 * 1.0 = 4.5
         assert b.score_count_gain == 4.5
-        # score = int(2 * 4.5) = 9
-        assert b.score == 9
+        # score = 2.0 * 4.5 = 9.0
+        assert b.score == 9.0
 
 
 class TestCalcScoreGain:
@@ -195,11 +195,11 @@ class TestScoreFrames:
         assert len(scored) == 6
         # first frame: future avg of [80,80,60,60,60]=68.0 (float, no int rounding)
         # gain = 80-68.0 = 12.0
-        # score_kills=4*1.0=4, score_count_gain=1+12.0*1.0=13.0, score=int(4*13.0)=52
-        assert scored[0].score == 52
+        # score_kills=4*1.0=4.0, score_count_gain=1+12.0*1.0=13.0, score=4.0*13.0=52.0
+        assert scored[0].score == 52.0
         # last frame: no future -> gain=0
-        # score_kills=4, score_count_gain=1.0, score=int(4*1.0)=4
-        assert scored[5].score == 4
+        # score_kills=4.0, score_count_gain=1.0, score=4.0*1.0=4.0
+        assert scored[5].score == 4.0
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     def test_score_count_gain_uses_future_window(self, _mock_cfg: MagicMock) -> None:
@@ -283,9 +283,9 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
-            _ScoredFrame(5.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
-            _ScoredFrame(10.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
+            _ScoredFrame(0.0, 1.0, ScoreBreakdown(1.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(5.0, 1.0, ScoreBreakdown(1.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(10.0, 1.0, ScoreBreakdown(1.0, 0.0, 0.0, 0.0), {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 1
@@ -294,9 +294,9 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 10, ScoreBreakdown(10, 0, 0.0, 0), {}),
-            _ScoredFrame(5.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
-            _ScoredFrame(10.0, 10, ScoreBreakdown(10, 0, 0.0, 0), {}),
+            _ScoredFrame(0.0, 10.0, ScoreBreakdown(10.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(5.0, 20.0, ScoreBreakdown(20.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(10.0, 10.0, ScoreBreakdown(10.0, 0.0, 0.0, 0.0), {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 1
@@ -309,12 +309,12 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 30, ScoreBreakdown(30, 0, 0.0, 0), {}),
-            _ScoredFrame(5.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
-            _ScoredFrame(10.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
-            _ScoredFrame(15.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
-            _ScoredFrame(20.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
-            _ScoredFrame(25.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
+            _ScoredFrame(0.0, 30.0, ScoreBreakdown(30.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(5.0, 1.0, ScoreBreakdown(1.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(10.0, 1.0, ScoreBreakdown(1.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(15.0, 20.0, ScoreBreakdown(20.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(20.0, 20.0, ScoreBreakdown(20.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(25.0, 20.0, ScoreBreakdown(20.0, 0.0, 0.0, 0.0), {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 2
@@ -326,15 +326,15 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
-            _ScoredFrame(5.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
-            _ScoredFrame(10.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
-            _ScoredFrame(15.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
-            _ScoredFrame(20.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
-            _ScoredFrame(25.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
-            _ScoredFrame(30.0, 15, ScoreBreakdown(15, 0, 0.0, 0), {}),
-            _ScoredFrame(35.0, 15, ScoreBreakdown(15, 0, 0.0, 0), {}),
-            _ScoredFrame(40.0, 15, ScoreBreakdown(15, 0, 0.0, 0), {}),
+            _ScoredFrame(0.0, 20.0, ScoreBreakdown(20.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(5.0, 20.0, ScoreBreakdown(20.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(10.0, 20.0, ScoreBreakdown(20.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(15.0, 1.0, ScoreBreakdown(1.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(20.0, 1.0, ScoreBreakdown(1.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(25.0, 1.0, ScoreBreakdown(1.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(30.0, 15.0, ScoreBreakdown(15.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(35.0, 15.0, ScoreBreakdown(15.0, 0.0, 0.0, 0.0), {}),
+            _ScoredFrame(40.0, 15.0, ScoreBreakdown(15.0, 0.0, 0.0, 0.0), {}),
         ]
         segments = detector._select_windows(scored)
         for i in range(len(segments) - 1):
@@ -829,3 +829,92 @@ class TestNormalizeCounts:
         ]
         for i in range(1, len(my_counts)):
             assert my_counts[i] <= my_counts[i - 1], f"not monotone at {i}"
+
+
+class TestCountRailSwap:
+    """Tests for count rail detection and my/enemy count swapping."""
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    @patch("src.highlight_detector.extract_frames")
+    def test_rail_majority_triggers_swap(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """When has_count_rail=True is majority, counts are swapped."""
+        phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
+        phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
+        mock_extract.side_effect = [phase_a_frames, phase_b_frames]
+
+        # 3/4 frames have has_count_rail=True -> majority -> swap
+        upper_results = [
+            {"my_team_count": 100, "enemy_team_count": 80, "has_count_rail": True},
+            {"my_team_count": 90, "enemy_team_count": 70, "has_count_rail": True},
+            {"my_team_count": 80, "enemy_team_count": 60, "has_count_rail": True},
+            {"my_team_count": 70, "enemy_team_count": 50, "has_count_rail": False},
+        ]
+        call_count = [0]
+
+        def mock_upper(frame, timestamp):
+            idx = call_count[0]
+            call_count[0] += 1
+            return upper_results[min(idx, len(upper_results) - 1)]
+
+        def mock_lower(frame, timestamp):
+            return {"kills": 1, "is_dead": False}
+
+        analyzer = MagicMock()
+        analyzer.concurrency = 4
+        analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
+
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        detector.detect("/fake/video.mp4", duration_type="5min")
+
+        assert detector.scan_summary["count_swapped"] is True
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    @patch("src.highlight_detector.extract_frames")
+    def test_rail_minority_no_swap(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """When has_count_rail=True is minority, no swap occurs."""
+        phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
+        phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
+        mock_extract.side_effect = [phase_a_frames, phase_b_frames]
+
+        # 1/4 frames have has_count_rail=True -> minority -> no swap
+        upper_results = [
+            {"my_team_count": 100, "enemy_team_count": 80, "has_count_rail": True},
+            {"my_team_count": 90, "enemy_team_count": 70, "has_count_rail": False},
+            {"my_team_count": 80, "enemy_team_count": 60, "has_count_rail": False},
+            {"my_team_count": 70, "enemy_team_count": 50, "has_count_rail": False},
+        ]
+        call_count = [0]
+
+        def mock_upper(frame, timestamp):
+            idx = call_count[0]
+            call_count[0] += 1
+            return upper_results[min(idx, len(upper_results) - 1)]
+
+        def mock_lower(frame, timestamp):
+            return {"kills": 1, "is_dead": False}
+
+        analyzer = MagicMock()
+        analyzer.concurrency = 4
+        analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
+
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        detector.detect("/fake/video.mp4", duration_type="5min")
+
+        assert detector.scan_summary["count_swapped"] is False
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    @patch("src.highlight_detector.extract_frames")
+    def test_nawabari_count_swapped_false(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """Nawabari mode always has count_swapped=False."""
+        mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
+
+        analyzer = MagicMock()
+        analyzer.concurrency = 4
+        analyzer.analyze_frame_lower_only.return_value = {"kills": 1, "is_dead": False}
+
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        detector.detect("/fake/video.mp4", duration_type="3min")
+
+        assert detector.scan_summary["count_swapped"] is False

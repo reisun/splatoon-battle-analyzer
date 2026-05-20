@@ -58,20 +58,21 @@ UPPER_HALF_SYSTEM_PROMPT = """\
 - タイマーの下:
     ゲームカウント。自チームの色と相手チームの色の２つ
     カウントの上に小さく「のこり」と表示されている
-    ※ ヤグラ・ホコルールの場合:
-      自チームのカウントバーは中央から右へ進行する
-      敵チームのカウントバーは中央から左へ進行する
-      （オブジェクトを敵陣に押し込むゲーム性のため）
 - ゲームカウント回りの小さな数字:
     ルールごとに仕様が異なり複雑なため無視する。混同注意。
+- タイマーの下（ゲームカウントの周辺）:
+    ヤグラ・ホコルールでは、ゲームカウントが動くためのレール（横棒）が表示される
+    エリア・ナワバリでは表示されない
 
 ■ 各項目:
 - my_team_count / enemy_team_count: (null, 0~100) 自チーム・相手チームのカウント。不明瞭な場合はnull
+- has_count_rail: (true/false) ゲームカウントのレール（横棒）が表示されているか。不明瞭な場合はfalse
 
 ■ 出力フォーマット（JSONのみ、他のテキスト不可）:
 {
   "my_team_count": number | null,
-  "enemy_team_count": number | null
+  "enemy_team_count": number | null,
+  "has_count_rail": boolean
 }
 """
 
@@ -303,7 +304,7 @@ class BattleAnalyzer:
         if isinstance(upper, dict):
             merged.update(upper)
         else:
-            merged.update({"my_team_count": None, "enemy_team_count": None})
+            merged.update({"my_team_count": None, "enemy_team_count": None, "has_count_rail": False})
         if isinstance(lower, dict):
             merged.update(lower)
         else:
