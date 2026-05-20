@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 TIMER_SCAN_SYSTEM_PROMPT = """\
 あなたはスプラトゥーンのゲーム画面の上部から試合タイマーを読み取る専門AIです。
-この画像はゲーム画面の上部30%のみをクロップしたものです。
+この画像はゲーム画面の上部中央（上15%・中央40%幅）をクロップしたものです。
 
 ■ 読み取り対象:
 - 画面上部中央に表示されている試合の残り時間タイマー
@@ -39,7 +39,7 @@ TIMER_SCAN_SYSTEM_PROMPT = """\
 }
 """
 
-TIMER_SCAN_USER_PROMPT = "この画像（ゲーム画面の上部30%）から試合タイマーの残り時間を読み取ってJSON形式で回答してください。"
+TIMER_SCAN_USER_PROMPT = "この画像（ゲーム画面の上部中央）から試合タイマーの残り時間を読み取ってJSON形式で回答してください。"
 
 # Clustering tolerance in seconds for grouping frames into the same match
 CLUSTER_TOLERANCE = 30.0
@@ -285,8 +285,11 @@ class MatchScanner:
             ts_label = self._format_timestamp(timestamp_sec)
 
             frame = _half_resize(frames[index])
-            h = frame.shape[0]
-            upper_half = frame[: int(h * 0.3), :, :]
+            h, w = frame.shape[:2]
+            upper = frame[: int(h * 0.15), :, :]
+            left = int(w * 0.3)
+            right = int(w * 0.7)
+            upper_half = upper[:, left:right, :]
 
             try:
                 result = self.analyzer._analyze_cropped(
