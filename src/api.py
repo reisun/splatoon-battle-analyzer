@@ -46,7 +46,7 @@ class FrameResult(BaseModel):
     timestamp_seconds: float
     score: int
     score_kills: int
-    score_count_gain: int
+    score_count_gain: float
     score_dead: int
     my_team_count: int | None
     enemy_team_count: int | None
@@ -54,6 +54,7 @@ class FrameResult(BaseModel):
     is_dead: bool
     my_team_count_raw: int | None
     enemy_team_count_raw: int | None
+    enemy_score_gain: float = 0.0
 
     @field_validator("my_team_count_raw", "enemy_team_count_raw", mode="before")
     @classmethod
@@ -130,6 +131,7 @@ def _to_frame_results(frames: list[FrameAnalysis]) -> list[FrameResult]:
             is_dead=f.is_dead,
             my_team_count_raw=f.my_team_count_raw,
             enemy_team_count_raw=f.enemy_team_count_raw,
+            enemy_score_gain=f.enemy_score_gain,
         )
         for f in frames
     ]

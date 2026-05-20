@@ -1,4 +1,8 @@
-"""Two-pass highlight detection for Splatoon gameplay videos."""
+"""Highlight detection for Splatoon gameplay videos.
+
+Ranked (5min): Phase A (upper 15s) -> Phase B (lower 5s, gain>1 regions).
+Nawabari (3min): Single pass lower-only at 5s intervals.
+"""
 
 import logging
 from collections.abc import Callable
@@ -19,20 +23,18 @@ MAX_CLIP_SECONDS = 15
 MAX_TOTAL_SECONDS = 60
 
 
-def _calc_score_count_gain(cur_count: int | None, future_avg: int | None) -> int:
+def _calc_score_count_gain(cur_count: int | None, future_avg: float | None) -> float:
     """現時点と未来平均のゲームカウント差分を返す."""
     if cur_count is None or future_avg is None:
-        return 0
-    return max(0, cur_count - future_avg)
+        return 0.0
+    return max(0.0, float(cur_count - future_avg))
 
 
 FIRST_VALUE_FLOOR = 50
 MEDIAN_RADIUS = 2
 
 
-def _median_smooth(
-    values: list[int | None], radius: int = MEDIAN_RADIUS
-) -> list[int | None]:
+def _median_smooth(values: list[int | None], radius: int = MEDIAN_RADIUS) -> list[int | None]:
     """スライディングウィンドウのメディアンで外れ値を平滑化する.
 
     None値はスキップ（出力もNone）。各位置で前後radius個の範囲内の
@@ -147,25 +149,36 @@ def _normalize_counts(
 class ScoreBreakdown:
     score: int
     score_kills: int
-    score_count_gain: int
+    score_count_gain: float
     score_dead: int
+    enemy_score_gain: float = 0.0
 
 
 def _compute_score(result: dict, cfg: ScoringConfig | None = None) -> ScoreBreakdown:
     """重み付き加算でスコアを計算し内訳を返す."""
     if cfg is None:
         cfg = load_scoring_config()
+    enemy_score_gain = float(result.get("enemy_score_gain", 0.0))
     if result.get("is_dead", False):
         score_dead = int(cfg.death_penalty)
-        return ScoreBreakdown(score=score_dead, score_kills=0, score_count_gain=0, score_dead=score_dead)
+        return ScoreBreakdown(
+            score=score_dead,
+            score_kills=0,
+            score_count_gain=0.0,
+            score_dead=score_dead,
+            enemy_score_gain=enemy_score_gain,
+        )
     kills = max(0, min(4, result.get("kills", 0)))
-    gain = max(0, result.get("score_count_gain", 0))
+    gain = max(0.0, float(result.get("score_count_gain", 0)))
     score_kills = int(kills * cfg.weights.kills)
-    score_count_gain = int(1 + gain * cfg.weights.score_count_gain)
-    score = score_kills * score_count_gain
+    score_count_gain = 1 + gain * cfg.weights.score_count_gain
+    score = int(score_kills * score_count_gain)
     return ScoreBreakdown(
-        score=score, score_kills=score_kills,
-        score_count_gain=score_count_gain, score_dead=0,
+        score=score,
+        score_kills=score_kills,
+        score_count_gain=score_count_gain,
+        score_dead=0,
+        enemy_score_gain=enemy_score_gain,
     )
 
 
@@ -182,7 +195,7 @@ class FrameAnalysis:
     timestamp_seconds: float
     score: int
     score_kills: int
-    score_count_gain: int
+    score_count_gain: float
     score_dead: int
     my_team_count: int | None
     enemy_team_count: int | None
@@ -190,6 +203,7 @@ class FrameAnalysis:
     is_dead: bool
     my_team_count_raw: int | None
     enemy_team_count_raw: int | None
+    enemy_score_gain: float = 0.0
 
 
 @dataclass
@@ -221,93 +235,216 @@ class HighlightDetector:
         progress_callback: ProgressCallback | None = None,
     ) -> list[HighlightSegment]:
         video_path = Path(video_path)
-        skip_upper = duration_type == "3min"
+        scan_start = start_seconds or 0.0
 
+        if duration_type == "3min":
+            return self._detect_nawabari(
+                video_path,
+                scan_start,
+                end_seconds,
+                progress_callback,
+            )
+        return self._detect_ranked(
+            video_path,
+            scan_start,
+            end_seconds,
+            progress_callback,
+        )
+
+    def _detect_nawabari(
+        self,
+        video_path: Path,
+        scan_start: float,
+        end_seconds: float | None,
+        progress_callback: ProgressCallback | None,
+    ) -> list[HighlightSegment]:
+        """ナワバリ: 全区間で下半分のみ5秒間隔."""
         frames = extract_frames(
             video_path=video_path,
             interval_seconds=self.interval,
             no_save=True,
-            start_seconds=start_seconds,
+            start_seconds=scan_start if scan_start else None,
             end_seconds=end_seconds,
         )
-
-        scan_start = start_seconds or 0.0
-        total_frames = len(frames)
-        results: list[tuple[float, dict | str] | None] = [None] * total_frames
-
-        def _analyze_one(index: int) -> None:
-            timestamp_sec = scan_start + index * self.interval
-            ts_label = self._format_timestamp(timestamp_sec)
-            try:
-                if skip_upper:
-                    result = self.analyzer.analyze_frame_lower_only(
-                        frames[index], ts_label,
-                    )
-                else:
-                    result = self.analyzer.analyze_frame_split(
-                        frames[index], ts_label,
-                    )
-            except Exception:
-                logger.exception("Analysis failed for frame at %s", ts_label)
-                result = {"kills": 0}
-            results[index] = (timestamp_sec, result)
-
-        # --- Pass 1: coarse scan (every other frame = 2x interval) ---
-        coarse_indices = list(range(0, total_frames, 2))
-        coarse_total = len(coarse_indices)
+        total = len(frames)
         done_count = [0]
+        results: list[tuple[float, dict | str]] = []
 
-        def _analyze_coarse(index: int) -> None:
-            _analyze_one(index)
-            done_count[0] += 1
-            if progress_callback:
-                progress_callback(1, done_count[0], coarse_total)
+        def _analyze(index: int) -> tuple[float, dict]:
+            ts = scan_start + index * self.interval
+            label = self._format_timestamp(ts)
+            try:
+                result = self.analyzer.analyze_frame_lower_only(frames[index], label)
+            except Exception:
+                logger.exception("Analysis failed for frame at %s", label)
+                result = {"kills": 0}
+            return ts, result
 
         with ThreadPoolExecutor(max_workers=self.analyzer.concurrency) as executor:
-            futures = [executor.submit(_analyze_coarse, i) for i in coarse_indices]
+            futures = {executor.submit(_analyze, i): i for i in range(total)}
+            for future in as_completed(futures):
+                ts, result = future.result()
+                results.append((ts, result))
+                done_count[0] += 1
+                if progress_callback:
+                    progress_callback(1, done_count[0], total)
+
+        self.scan_summary = {
+            "phase_a_frames": total,
+            "phase_b_frames": 0,
+            "total_frames": total,
+        }
+        return self._finalize(results)
+
+    def _detect_ranked(
+        self,
+        video_path: Path,
+        scan_start: float,
+        end_seconds: float | None,
+        progress_callback: ProgressCallback | None,
+    ) -> list[HighlightSegment]:
+        """ガチルール: Phase A (上半分15秒) -> Phase B (下半分5秒, gain>1区間)."""
+        phase_a_interval = 15.0
+
+        # --- Phase A: upper-only at 15s intervals ---
+        frames_a = extract_frames(
+            video_path=video_path,
+            interval_seconds=phase_a_interval,
+            no_save=True,
+            start_seconds=scan_start if scan_start else None,
+            end_seconds=end_seconds,
+        )
+        total_a = len(frames_a)
+        done_count = [0]
+        results_a: list[tuple[float, dict | str]] = [None] * total_a  # type: ignore[list-item]
+
+        def _analyze_upper(index: int) -> None:
+            ts = scan_start + index * phase_a_interval
+            label = self._format_timestamp(ts)
+            try:
+                result = self.analyzer.analyze_frame_upper_only(frames_a[index], label)
+            except Exception:
+                logger.exception("Phase A failed for frame at %s", label)
+                result = {"my_team_count": None, "enemy_team_count": None, "kills": 0}
+            results_a[index] = (ts, result)
+            done_count[0] += 1
+            if progress_callback:
+                progress_callback(1, done_count[0], total_a)
+
+        with ThreadPoolExecutor(max_workers=self.analyzer.concurrency) as executor:
+            futures = [executor.submit(_analyze_upper, i) for i in range(total_a)]
             for future in as_completed(futures):
                 future.result()
 
-        # --- Determine dense scan regions ---
-        dense_indices = self._find_dense_indices(results, total_frames)
-        dense_total = len(dense_indices)
+        # Score Phase A to get score_count_gain values
+        scored_a = self._score_frames(list(results_a))
+
+        # --- Determine Phase B regions (score_count_gain > 1 or enemy_score_gain > 1) ---
+        interesting_timestamps: set[float] = set()
+        for sf in scored_a:
+            if sf.raw.get("score_count_gain", 0) > 1 or sf.raw.get("enemy_score_gain", 0) > 1:
+                interesting_timestamps.add(sf.timestamp)
+
+        # Phase A timestamps on 15s grid (also on 5s grid)
+        phase_a_ts_set: set[float] = {sf.timestamp for sf in scored_a}
+
+        # Build 5s grid timestamps and determine which need Phase B analysis
+        frames_b = extract_frames(
+            video_path=video_path,
+            interval_seconds=self.interval,
+            no_save=True,
+            start_seconds=scan_start if scan_start else None,
+            end_seconds=end_seconds,
+        )
+        total_b_grid = len(frames_b)
+
+        # Map 5s grid indices to timestamps
+        b_timestamps = [scan_start + i * self.interval for i in range(total_b_grid)]
+
+        # Determine which 5s frames need lower-half analysis
+        # A frame needs Phase B if any interesting Phase A timestamp is within +-15s
+        phase_b_indices: list[int] = []
+        for i, ts in enumerate(b_timestamps):
+            if ts in phase_a_ts_set:
+                # Phase A frame: reuse upper data, still need lower if interesting
+                pass
+            for interesting_ts in interesting_timestamps:
+                if abs(ts - interesting_ts) <= phase_a_interval:
+                    phase_b_indices.append(i)
+                    break
+
+        # Remove duplicates and sort
+        phase_b_indices = sorted(set(phase_b_indices))
+        phase_b_total = len(phase_b_indices)
+
         logger.info(
-            "Pass 1 done: %d coarse frames. Pass 2: %d dense frames needed.",
-            coarse_total, dense_total,
+            "Phase A done: %d frames. Phase B: %d frames needed.",
+            total_a,
+            phase_b_total,
         )
 
-        # --- Pass 2: dense scan (fill gaps in interesting regions) ---
+        # --- Phase B: lower-only at 5s intervals for interesting regions ---
         done_count[0] = 0
+        phase_b_results: dict[float, dict] = {}
 
-        def _analyze_dense(index: int) -> None:
-            _analyze_one(index)
+        def _analyze_lower(index: int) -> None:
+            ts = b_timestamps[index]
+            label = self._format_timestamp(ts)
+            try:
+                result = self.analyzer.analyze_frame_lower_only(frames_b[index], label)
+            except Exception:
+                logger.exception("Phase B failed for frame at %s", label)
+                result = {"kills": 0, "is_dead": False}
+            phase_b_results[ts] = result
             done_count[0] += 1
             if progress_callback:
-                progress_callback(2, done_count[0], dense_total)
+                progress_callback(2, done_count[0], phase_b_total)
 
-        if dense_indices:
+        if phase_b_indices:
             with ThreadPoolExecutor(max_workers=self.analyzer.concurrency) as executor:
-                futures = [executor.submit(_analyze_dense, i) for i in dense_indices]
+                futures = [executor.submit(_analyze_lower, i) for i in phase_b_indices]
                 for future in as_completed(futures):
                     future.result()
 
-        # --- Build final results (only analyzed frames) ---
-        analyzed: list[tuple[float, dict | str]] = []
-        for i in range(total_frames):
-            if results[i] is not None:
-                analyzed.append(results[i])  # type: ignore[arg-type]
+        # --- Merge Phase A + Phase B ---
+        # Build Phase A lookup
+        phase_a_data: dict[float, dict] = {}
+        for sf in scored_a:
+            phase_a_data[sf.timestamp] = sf.raw
 
-        battle_count = sum(
-            1 for _, r in analyzed if isinstance(r, dict) and r.get("scene") != "other"
-        )
+        # Build merged results on the 5s grid
+        merged_results: list[tuple[float, dict | str]] = []
+        for i, ts in enumerate(b_timestamps):
+            merged: dict = {}
+            # Upper data: from Phase A if on 15s grid, otherwise empty
+            if ts in phase_a_data:
+                upper = phase_a_data[ts]
+                merged.update(upper)
+            else:
+                merged.update({"my_team_count": None, "enemy_team_count": None})
+
+            # Lower data: from Phase B if analyzed, otherwise defaults
+            if ts in phase_b_results:
+                lower = phase_b_results[ts]
+                if isinstance(lower, dict):
+                    merged.update(lower)
+                else:
+                    merged.update({"kills": 0, "is_dead": False})
+            else:
+                merged.update({"kills": 0, "is_dead": False})
+
+            merged_results.append((ts, merged))
+
         self.scan_summary = {
-            "total_frames": len(analyzed),
-            "coarse_frames": coarse_total,
-            "dense_frames": dense_total,
-            "battle_frames": battle_count,
+            "phase_a_frames": total_a,
+            "phase_b_frames": phase_b_total,
+            "total_frames": len(merged_results),
         }
+        return self._finalize(merged_results)
 
-        scored = self._score_frames(analyzed)
+    def _finalize(self, results: list[tuple[float, dict | str]]) -> list[HighlightSegment]:
+        """Score, build all_frames, select windows, apply budget."""
+        scored = self._score_frames(results)
         self.all_frames = [
             FrameAnalysis(
                 timestamp_seconds=f.timestamp,
@@ -321,6 +458,7 @@ class HighlightDetector:
                 is_dead=f.raw.get("is_dead", False),
                 my_team_count_raw=f.raw.get("my_team_count_raw"),
                 enemy_team_count_raw=f.raw.get("enemy_team_count_raw"),
+                enemy_score_gain=f.breakdown.enemy_score_gain,
             )
             for f in scored
         ]
@@ -336,57 +474,40 @@ class HighlightDetector:
 
         return budget_segments
 
-    @staticmethod
-    def _find_dense_indices(
-        results: list[tuple[float, dict | str] | None],
-        total_frames: int,
-    ) -> list[int]:
-        """Pass 1の結果から、Pass 2で密スキャンすべき奇数インデックスを返す."""
-        interesting_coarse: set[int] = set()
-        for i in range(0, total_frames, 2):
-            r = results[i]
-            if r is None:
-                continue
-            _, data = r
-            if not isinstance(data, dict):
-                continue
-            if data.get("kills", 0) > 0 or data.get("is_dead", False):
-                interesting_coarse.add(i)
-
-        dense: set[int] = set()
-        for ci in interesting_coarse:
-            for neighbor in (ci - 2, ci, ci + 2):
-                odd = neighbor + 1
-                if 0 <= odd < total_frames and results[odd] is None:
-                    dense.add(odd)
-                odd_before = neighbor - 1
-                if 0 <= odd_before < total_frames and results[odd_before] is None:
-                    dense.add(odd_before)
-        return sorted(dense)
-
     def _score_frames(self, results: list[tuple[float, dict | str]]) -> list[_ScoredFrame]:
         cfg = load_scoring_config()
         sorted_results = sorted(results, key=lambda x: x[0])
         _normalize_counts(sorted_results)
         window_size = max(1, int(cfg.score_count_gain_window_seconds / self.interval))
 
-        counts: list[int | None] = []
+        my_counts: list[int | None] = []
+        enemy_counts: list[int | None] = []
         for _, result in sorted_results:
             if isinstance(result, dict):
-                counts.append(result.get("my_team_count"))
+                my_counts.append(result.get("my_team_count"))
+                enemy_counts.append(result.get("enemy_team_count"))
             else:
-                counts.append(None)
+                my_counts.append(None)
+                enemy_counts.append(None)
 
         scored: list[_ScoredFrame] = []
         for i, (timestamp, result) in enumerate(sorted_results):
-            breakdown = ScoreBreakdown(score=0, score_kills=0, score_count_gain=0, score_dead=0)
+            breakdown = ScoreBreakdown(score=0, score_kills=0, score_count_gain=0.0, score_dead=0)
             raw: dict = {}
             if isinstance(result, dict):
                 raw = result
-                cur_count = counts[i]
-                future_slice = [c for c in counts[i + 1 : i + 1 + window_size] if c is not None]
-                future_avg = int(sum(future_slice) / len(future_slice)) if future_slice else None
+                # my_team score_count_gain
+                cur_count = my_counts[i]
+                future_slice = [c for c in my_counts[i + 1 : i + 1 + window_size] if c is not None]
+                future_avg = sum(future_slice) / len(future_slice) if future_slice else None
                 raw["score_count_gain"] = _calc_score_count_gain(cur_count, future_avg)
+                # enemy_team score_gain
+                enemy_cur = enemy_counts[i]
+                enemy_future = [
+                    c for c in enemy_counts[i + 1 : i + 1 + window_size] if c is not None
+                ]
+                enemy_avg = sum(enemy_future) / len(enemy_future) if enemy_future else None
+                raw["enemy_score_gain"] = _calc_score_count_gain(enemy_cur, enemy_avg)
                 breakdown = _compute_score(raw, cfg)
             scored.append(_ScoredFrame(timestamp, breakdown.score, breakdown, raw))
         return scored
