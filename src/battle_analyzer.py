@@ -291,9 +291,7 @@ class BattleAnalyzer:
         """Analyze a cropped frame region."""
         tmp_path = _save_temp_frame(frame)
         try:
-            result = self._call_agent_gateway(
-                user_prompt, tmp_path, system_prompt=system_prompt
-            )
+            result = self._call_agent_gateway(user_prompt, tmp_path, system_prompt=system_prompt)
             return parse_llm_response(result)
         finally:
             os.unlink(tmp_path)
@@ -323,17 +321,40 @@ class BattleAnalyzer:
         with ThreadPoolExecutor(max_workers=2) as executor:
             upper_future = executor.submit(
                 self._analyze_cropped,
-                upper_half, UPPER_HALF_USER_PROMPT, UPPER_HALF_SYSTEM_PROMPT, timestamp,
+                upper_half,
+                UPPER_HALF_USER_PROMPT,
+                UPPER_HALF_SYSTEM_PROMPT,
+                timestamp,
             )
             lower_future = executor.submit(
                 self._analyze_cropped,
-                lower_half, LOWER_HALF_USER_PROMPT, LOWER_HALF_SYSTEM_PROMPT, timestamp,
+                lower_half,
+                LOWER_HALF_USER_PROMPT,
+                LOWER_HALF_SYSTEM_PROMPT,
+                timestamp,
             )
             upper_result = upper_future.result()
             lower_result = lower_future.result()
 
         merged = self._merge_results(upper_result, lower_result)
         logger.info("Analysis complete for frame at %s (split mode)", timestamp)
+        return merged
+
+    def analyze_frame_upper_only(self, frame: np.ndarray, timestamp: str) -> dict:
+        """Analyze only the upper half (game count only, skip kills/death)."""
+        frame = _half_resize(frame)
+        h = frame.shape[0]
+        upper_half = frame[: int(h * 0.3), :, :]
+
+        logger.info("Analyzing frame at %s (upper-only mode)", timestamp)
+        upper_result = self._analyze_cropped(
+            upper_half,
+            UPPER_HALF_USER_PROMPT,
+            UPPER_HALF_SYSTEM_PROMPT,
+            timestamp,
+        )
+        merged = self._merge_results(upper_result, {})
+        logger.info("Analysis complete for frame at %s (upper-only mode)", timestamp)
         return merged
 
     def analyze_frame_lower_only(self, frame: np.ndarray, timestamp: str) -> dict:
@@ -344,7 +365,10 @@ class BattleAnalyzer:
 
         logger.info("Analyzing frame at %s (lower-only mode)", timestamp)
         lower_result = self._analyze_cropped(
-            lower_half, LOWER_HALF_USER_PROMPT, LOWER_HALF_SYSTEM_PROMPT, timestamp,
+            lower_half,
+            LOWER_HALF_USER_PROMPT,
+            LOWER_HALF_SYSTEM_PROMPT,
+            timestamp,
         )
         merged = self._merge_results({}, lower_result)
         logger.info("Analysis complete for frame at %s (lower-only mode)", timestamp)

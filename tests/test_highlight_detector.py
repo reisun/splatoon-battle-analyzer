@@ -30,24 +30,24 @@ class TestComputeScore:
     def test_all_ones(self) -> None:
         result = {"kills": 1, "score_count_gain": 1}
         b = _compute_score(result, _DEFAULT_CFG)
-        # score_kills=1*1.0=1, score_count_gain=int(1+1*1.0)=2, score=1*2=2
+        # score_kills=1*1.0=1, score_count_gain=1+1*1.0=2.0, score=int(1*2.0)=2
         assert b.score == 2
         assert b.score_kills == 1
-        assert b.score_count_gain == 2
+        assert b.score_count_gain == 2.0
         assert b.score_dead == 0
 
     def test_all_max(self) -> None:
         result = {"kills": 4, "score_count_gain": 10}
-        # score_kills=4, score_count_gain=int(1+10)=11, score=4*11=44
+        # score_kills=4, score_count_gain=1+10=11.0, score=int(4*11.0)=44
         assert _compute_score(result, _DEFAULT_CFG).score == 44
 
     def test_mixed_values(self) -> None:
         result = {"kills": 3, "score_count_gain": 3}
-        # score_kills=3, score_count_gain=int(1+3)=4, score=3*4=12
+        # score_kills=3, score_count_gain=1+3=4.0, score=int(3*4.0)=12
         assert _compute_score(result, _DEFAULT_CFG).score == 12
 
     def test_missing_keys_default_to_zero(self) -> None:
-        # score_kills=0, score_count_gain=1, score=0*1=0
+        # score_kills=0, score_count_gain=1.0, score=0
         assert _compute_score({}, _DEFAULT_CFG).score == 0
 
     def test_kills_zero_is_valid(self) -> None:
@@ -57,7 +57,7 @@ class TestComputeScore:
 
     def test_clamps_above_four(self) -> None:
         result = {"kills": 99, "score_count_gain": 1}
-        # kills clamped to 4, score_kills=4, score_count_gain=2, score=4*2=8
+        # kills clamped to 4, score_kills=4, score_count_gain=2.0, score=int(4*2.0)=8
         assert _compute_score(result, _DEFAULT_CFG).score == 8
 
     def test_is_dead_returns_penalty_only(self) -> None:
@@ -65,12 +65,12 @@ class TestComputeScore:
         b = _compute_score(result, _DEFAULT_CFG)
         assert b.score == int(0.5)
         assert b.score_kills == 0
-        assert b.score_count_gain == 0
+        assert b.score_count_gain == 0.0
         assert b.score_dead == int(0.5)
 
     def test_is_dead_false_no_penalty(self) -> None:
         result = {"kills": 3, "score_count_gain": 3, "is_dead": False}
-        # score_kills=3, score_count_gain=4, score=12
+        # score_kills=3, score_count_gain=4.0, score=int(3*4.0)=12
         assert _compute_score(result, _DEFAULT_CFG).score == 12
 
     def test_custom_weights(self) -> None:
@@ -78,44 +78,68 @@ class TestComputeScore:
             weights=ScoringWeights(kills=1.5, score_count_gain=0.5),
         )
         result = {"kills": 4, "score_count_gain": 3}
-        # score_kills=int(4*1.5)=6, score_count_gain=int(1+3*0.5)=2, score=6*2=12
-        assert _compute_score(result, cfg).score == 12
+        # score_kills=int(4*1.5)=6, score_count_gain=1+3*0.5=2.5, score=int(6*2.5)=15
+        assert _compute_score(result, cfg).score == 15
 
     def test_custom_death_penalty(self) -> None:
         cfg = ScoringConfig(death_penalty=3)
         result = {"kills": 10, "score_count_gain": 1, "is_dead": True}
         assert _compute_score(result, cfg).score == 3
 
+    def test_enemy_score_gain_in_breakdown(self) -> None:
+        """enemy_score_gain is passed through to breakdown."""
+        result = {"kills": 1, "score_count_gain": 0, "enemy_score_gain": 5.0}
+        b = _compute_score(result, _DEFAULT_CFG)
+        assert b.enemy_score_gain == 5.0
+
+    def test_score_count_gain_is_float(self) -> None:
+        """score_count_gain in breakdown is a float, not int."""
+        result = {"kills": 2, "score_count_gain": 3.5}
+        b = _compute_score(result, _DEFAULT_CFG)
+        assert isinstance(b.score_count_gain, float)
+        # 1 + 3.5 * 1.0 = 4.5
+        assert b.score_count_gain == 4.5
+        # score = int(2 * 4.5) = 9
+        assert b.score == 9
+
 
 class TestCalcScoreGain:
     """Tests for _calc_score_count_gain helper (forward-looking)."""
 
     def test_both_none(self) -> None:
-        assert _calc_score_count_gain(None, None) == 0
+        assert _calc_score_count_gain(None, None) == 0.0
 
     def test_cur_none(self) -> None:
-        assert _calc_score_count_gain(None, 50) == 0
+        assert _calc_score_count_gain(None, 50) == 0.0
 
     def test_future_none(self) -> None:
-        assert _calc_score_count_gain(50, None) == 0
+        assert _calc_score_count_gain(50, None) == 0.0
 
     def test_no_change(self) -> None:
-        assert _calc_score_count_gain(50, 50) == 0
+        assert _calc_score_count_gain(50, 50.0) == 0.0
 
     def test_future_lower(self) -> None:
-        # cur=80, future_avg=60 -> 80-60 = 20
-        assert _calc_score_count_gain(80, 60) == 20
+        # cur=80, future_avg=60.0 -> 80-60.0 = 20.0
+        assert _calc_score_count_gain(80, 60.0) == 20.0
 
     def test_future_much_lower(self) -> None:
-        # cur=80, future_avg=0 -> 80-0 = 80
-        assert _calc_score_count_gain(80, 0) == 80
+        # cur=80, future_avg=0.0 -> 80-0.0 = 80.0
+        assert _calc_score_count_gain(80, 0.0) == 80.0
 
     def test_large_diff(self) -> None:
-        assert _calc_score_count_gain(100, 0) == 100
+        assert _calc_score_count_gain(100, 0.0) == 100.0
 
     def test_future_higher_clamps_to_zero(self) -> None:
-        # cur=30, future_avg=50 -> 30-50 = -20 -> clamped to 0
-        assert _calc_score_count_gain(30, 50) == 0
+        # cur=30, future_avg=50.0 -> 30-50.0 = -20.0 -> clamped to 0.0
+        assert _calc_score_count_gain(30, 50.0) == 0.0
+
+    def test_returns_float(self) -> None:
+        result = _calc_score_count_gain(80, 60.0)
+        assert isinstance(result, float)
+
+    def test_fractional_future_avg(self) -> None:
+        # cur=80, future_avg=65.5 -> 14.5
+        assert _calc_score_count_gain(80, 65.5) == 14.5
 
 
 class TestHighlightSegment:
@@ -169,12 +193,12 @@ class TestScoreFrames:
         ]
         scored = detector._score_frames(results)
         assert len(scored) == 6
-        # first frame: future avg of [80,80,60,60,60]=68
-        # gain = 80-68 = 12
-        # score_kills=4*1.0=4, score_count_gain=int(1+12*1.0)=13, score=4*13=52
+        # first frame: future avg of [80,80,60,60,60]=68.0 (float, no int rounding)
+        # gain = 80-68.0 = 12.0
+        # score_kills=4*1.0=4, score_count_gain=1+12.0*1.0=13.0, score=int(4*13.0)=52
         assert scored[0].score == 52
         # last frame: no future -> gain=0
-        # score_kills=4, score_count_gain=1, score=4*1=4
+        # score_kills=4, score_count_gain=1.0, score=int(4*1.0)=4
         assert scored[5].score == 4
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
@@ -196,11 +220,34 @@ class TestScoreFrames:
         ]
         scored = detector._score_frames(results)
         # After median smoothing (radius=2), index 0 becomes 95.
-        # Future 6 frames (smoothed) = [95,90,85,80,75,70], avg=82
-        # gain = 95-82 = 13
-        assert scored[0].raw["score_count_gain"] == 13
-        # At 40s (last): no future -> score_count_gain=0
-        assert scored[8].raw["score_count_gain"] == 0
+        # Future 6 frames (smoothed) = [95,90,85,80,75,70], avg=82.5 (float!)
+        # gain = 95-82.5 = 12.5
+        assert scored[0].raw["score_count_gain"] == 12.5
+        # At 40s (last): no future -> score_count_gain=0.0
+        assert scored[8].raw["score_count_gain"] == 0.0
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    def test_enemy_score_gain_computed(self, _mock_cfg: MagicMock) -> None:
+        """enemy_score_gain is computed from enemy_team_count."""
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        # Use enough frames so median smooth preserves the pattern.
+        # enemy counts: 80,80,80,80,80,60,60,60,60,60
+        results = [
+            (float(i * 5), {"kills": 1, "my_team_count": 100, "enemy_team_count": 80})
+            for i in range(5)
+        ] + [
+            (float((i + 5) * 5), {"kills": 1, "my_team_count": 100, "enemy_team_count": 60})
+            for i in range(5)
+        ]
+        scored = detector._score_frames(results)
+        # First frame enemy_score_gain should be > 0 (80 vs future avg < 80)
+        assert scored[0].raw["enemy_score_gain"] > 0
+        # Last frame: no future -> enemy_score_gain=0.0
+        assert scored[9].raw["enemy_score_gain"] == 0.0
+        # All frames have enemy_score_gain key
+        for sf in scored:
+            assert "enemy_score_gain" in sf.raw
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     def test_non_dict_result_scores_zero(self, _mock_cfg: MagicMock) -> None:
@@ -236,9 +283,9 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
-            _ScoredFrame(5.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
-            _ScoredFrame(10.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
+            _ScoredFrame(0.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
+            _ScoredFrame(5.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
+            _ScoredFrame(10.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 1
@@ -247,9 +294,9 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 10, ScoreBreakdown(10, 0, 0, 0), {}),
-            _ScoredFrame(5.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
-            _ScoredFrame(10.0, 10, ScoreBreakdown(10, 0, 0, 0), {}),
+            _ScoredFrame(0.0, 10, ScoreBreakdown(10, 0, 0.0, 0), {}),
+            _ScoredFrame(5.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
+            _ScoredFrame(10.0, 10, ScoreBreakdown(10, 0, 0.0, 0), {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 1
@@ -262,12 +309,12 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 30, ScoreBreakdown(30, 0, 0, 0), {}),
-            _ScoredFrame(5.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
-            _ScoredFrame(10.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
-            _ScoredFrame(15.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
-            _ScoredFrame(20.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
-            _ScoredFrame(25.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
+            _ScoredFrame(0.0, 30, ScoreBreakdown(30, 0, 0.0, 0), {}),
+            _ScoredFrame(5.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
+            _ScoredFrame(10.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
+            _ScoredFrame(15.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
+            _ScoredFrame(20.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
+            _ScoredFrame(25.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
         ]
         segments = detector._select_windows(scored)
         assert len(segments) == 2
@@ -279,15 +326,15 @@ class TestSelectWindows:
         analyzer = MagicMock()
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         scored = [
-            _ScoredFrame(0.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
-            _ScoredFrame(5.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
-            _ScoredFrame(10.0, 20, ScoreBreakdown(20, 0, 0, 0), {}),
-            _ScoredFrame(15.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
-            _ScoredFrame(20.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
-            _ScoredFrame(25.0, 1, ScoreBreakdown(1, 0, 0, 0), {}),
-            _ScoredFrame(30.0, 15, ScoreBreakdown(15, 0, 0, 0), {}),
-            _ScoredFrame(35.0, 15, ScoreBreakdown(15, 0, 0, 0), {}),
-            _ScoredFrame(40.0, 15, ScoreBreakdown(15, 0, 0, 0), {}),
+            _ScoredFrame(0.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
+            _ScoredFrame(5.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
+            _ScoredFrame(10.0, 20, ScoreBreakdown(20, 0, 0.0, 0), {}),
+            _ScoredFrame(15.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
+            _ScoredFrame(20.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
+            _ScoredFrame(25.0, 1, ScoreBreakdown(1, 0, 0.0, 0), {}),
+            _ScoredFrame(30.0, 15, ScoreBreakdown(15, 0, 0.0, 0), {}),
+            _ScoredFrame(35.0, 15, ScoreBreakdown(15, 0, 0.0, 0), {}),
+            _ScoredFrame(40.0, 15, ScoreBreakdown(15, 0, 0.0, 0), {}),
         ]
         segments = detector._select_windows(scored)
         for i in range(len(segments) - 1):
@@ -302,76 +349,105 @@ class TestDetectFlow:
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_low_scores_still_produce_segments(
-        self, mock_extract: MagicMock, _mc: MagicMock
-    ) -> None:
-        """threshold廃止: 低スコアでも常にセグメントが返る."""
+    def test_nawabari_uses_lower_only(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """3min (nawabari) uses lower-only analysis."""
         mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
-        analyzer.analyze_frame_split.return_value = {
+        analyzer.analyze_frame_lower_only.return_value = {
             "kills": 1,
-            "score_count_gain": 1,
-            "special": False,
+            "is_dead": False,
         }
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
-        segments = detector.detect("/fake/video.mp4")
+        segments = detector.detect("/fake/video.mp4", duration_type="3min")
 
         assert len(segments) >= 1
-        assert detector.scan_summary["total_frames"] == 3
+        assert detector.scan_summary["phase_a_frames"] == 3
+        assert detector.scan_summary["phase_b_frames"] == 0
+        analyzer.analyze_frame_lower_only.assert_called()
+        analyzer.analyze_frame_upper_only.assert_not_called()
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_full_pipeline(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
-        frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 6
-        mock_extract.return_value = frames
+    def test_ranked_uses_phase_a_and_b(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """5min (ranked) uses Phase A upper + Phase B lower."""
+        # Phase A at 15s: 4 frames (0, 15, 30, 45) for 60s video
+        # Phase B at 5s: 12 frames (0, 5, 10, ..., 55)
+        phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
+        phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
 
-        count_map = {
-            "00m00s": 100,
-            "00m05s": 80,
-            "00m10s": 60,
-            "00m15s": 40,
-            "00m20s": 40,
-            "00m25s": 40,
+        # extract_frames called twice: first for 15s, then for 5s
+        mock_extract.side_effect = [phase_a_frames, phase_b_frames]
+
+        count_map_upper = {
+            "00m00s": {"my_team_count": 100, "enemy_team_count": 100, "kills": 0, "is_dead": False},
+            "00m15s": {"my_team_count": 80, "enemy_team_count": 80, "kills": 0, "is_dead": False},
+            "00m30s": {"my_team_count": 60, "enemy_team_count": 60, "kills": 0, "is_dead": False},
+            "00m45s": {"my_team_count": 40, "enemy_team_count": 40, "kills": 0, "is_dead": False},
         }
 
-        def mock_analyze(frame, timestamp):
-            count = count_map.get(timestamp, 100)
-            if timestamp in ("00m05s", "00m10s", "00m15s"):
-                return {
-                    "kills": 4,
-                    "my_team_count": count,
-                }
-            return {
-                "kills": 1,
-                "my_team_count": count,
+        def mock_upper(frame, timestamp):
+            default = {
+                "my_team_count": None,
+                "enemy_team_count": None,
+                "kills": 0,
+                "is_dead": False,
             }
+            return count_map_upper.get(timestamp, default)
+
+        def mock_lower(frame, timestamp):
+            return {"kills": 2, "is_dead": False}
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
-        analyzer.analyze_frame_split.side_effect = mock_analyze
+        analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
-        segments = detector.detect("/fake/video.mp4")
+        detector.detect("/fake/video.mp4", duration_type="5min")
 
-        assert len(segments) >= 1
-        assert detector.scan_summary["total_frames"] == 6
+        assert detector.scan_summary["phase_a_frames"] == 4
+        assert detector.scan_summary["phase_b_frames"] > 0
+        assert detector.scan_summary["total_frames"] == 12
+        analyzer.analyze_frame_upper_only.assert_called()
+        analyzer.analyze_frame_lower_only.assert_called()
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_progress_callback_called(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
-        """Progress callback is invoked for each frame."""
+    def test_ranked_no_gain_skips_phase_b(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """When no score_count_gain > 1, Phase B has 0 frames."""
+        phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
+        phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
+        mock_extract.side_effect = [phase_a_frames, phase_b_frames]
+
+        # All same counts -> no gain
+        def mock_upper(frame, timestamp):
+            return {"my_team_count": 100, "enemy_team_count": 100, "kills": 0, "is_dead": False}
+
+        analyzer = MagicMock()
+        analyzer.concurrency = 4
+        analyzer.analyze_frame_upper_only.side_effect = mock_upper
+
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        detector.detect("/fake/video.mp4", duration_type="5min")
+
+        assert detector.scan_summary["phase_b_frames"] == 0
+        analyzer.analyze_frame_lower_only.assert_not_called()
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    @patch("src.highlight_detector.extract_frames")
+    def test_progress_callback_nawabari(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """Progress callback is invoked for nawabari (phase=1 only)."""
         frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
         mock_extract.return_value = frames
 
         analyzer = MagicMock()
         analyzer.concurrency = 1
-        analyzer.analyze_frame_split.return_value = {
+        analyzer.analyze_frame_lower_only.return_value = {
             "kills": 1,
-            "score_count_gain": 1,
-            "special": False,
+            "is_dead": False,
         }
 
         progress_calls: list[tuple[int, int, int]] = []
@@ -380,41 +456,80 @@ class TestDetectFlow:
             progress_calls.append((phase, frames_done, frames_total))
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
-        detector.detect("/fake/video.mp4", progress_callback=on_progress)
+        detector.detect("/fake/video.mp4", duration_type="3min", progress_callback=on_progress)
 
         assert len(progress_calls) == 3
-        coarse_calls = [c for c in progress_calls if c[0] == 1]
-        dense_calls = [c for c in progress_calls if c[0] == 2]
-        assert len(coarse_calls) == 2
-        assert all(c[2] == 2 for c in coarse_calls)
-        assert len(dense_calls) == 1
+        assert all(c[0] == 1 for c in progress_calls)
+        assert all(c[2] == 3 for c in progress_calls)
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_parallel_execution(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
-        """Verify frames are analyzed in parallel via ThreadPoolExecutor."""
-        import threading
+    def test_progress_callback_ranked(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """Progress callback has phase=1 for A and phase=2 for B."""
+        phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
+        phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
+        mock_extract.side_effect = [phase_a_frames, phase_b_frames]
 
-        frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
-        mock_extract.return_value = frames
+        count_map = {
+            "00m00s": {"my_team_count": 100, "enemy_team_count": 100, "kills": 0, "is_dead": False},
+            "00m15s": {"my_team_count": 80, "enemy_team_count": 80, "kills": 0, "is_dead": False},
+            "00m30s": {"my_team_count": 60, "enemy_team_count": 60, "kills": 0, "is_dead": False},
+            "00m45s": {"my_team_count": 40, "enemy_team_count": 40, "kills": 0, "is_dead": False},
+        }
 
-        thread_ids: list[int] = []
-
-        def mock_analyze(frame, timestamp):
-            thread_ids.append(threading.current_thread().ident)
-            return {
-                "kills": 1,
-                "score_count_gain": 1,
+        def mock_upper(frame, timestamp):
+            default = {
+                "my_team_count": None,
+                "enemy_team_count": None,
+                "kills": 0,
+                "is_dead": False,
             }
+            return count_map.get(timestamp, default)
+
+        def mock_lower(frame, timestamp):
+            return {"kills": 1, "is_dead": False}
+
+        analyzer = MagicMock()
+        analyzer.concurrency = 1
+        analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
+
+        progress_calls: list[tuple[int, int, int]] = []
+
+        def on_progress(phase: int, frames_done: int, frames_total: int) -> None:
+            progress_calls.append((phase, frames_done, frames_total))
+
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        detector.detect("/fake/video.mp4", duration_type="5min", progress_callback=on_progress)
+
+        phase1_calls = [c for c in progress_calls if c[0] == 1]
+        phase2_calls = [c for c in progress_calls if c[0] == 2]
+        assert len(phase1_calls) == 4  # Phase A: 4 frames
+        assert all(c[2] == 4 for c in phase1_calls)
+        if phase2_calls:
+            assert all(c[0] == 2 for c in phase2_calls)
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    @patch("src.highlight_detector.extract_frames")
+    def test_enemy_score_gain_in_all_frames(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """enemy_score_gain appears in all_frames output."""
+        mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
-        analyzer.analyze_frame_split.side_effect = mock_analyze
+        analyzer.analyze_frame_lower_only.return_value = {
+            "kills": 1,
+            "is_dead": False,
+            "my_team_count": None,
+            "enemy_team_count": None,
+        }
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
-        detector.detect("/fake/video.mp4")
+        detector.detect("/fake/video.mp4", duration_type="3min")
 
-        assert len(thread_ids) == 4
+        for frame in detector.all_frames:
+            assert hasattr(frame, "enemy_score_gain")
+            assert isinstance(frame.enemy_score_gain, float)
 
 
 class TestMedianSmooth:
