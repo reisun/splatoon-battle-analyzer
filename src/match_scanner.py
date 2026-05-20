@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.battle_analyzer import BattleAnalyzer, _half_resize
+from src.cv_detector import read_timer
 from src.frame_extractor import extract_frames
 from src.highlight_detector import _isotonic_decreasing, _median_smooth
 
@@ -347,22 +348,9 @@ class MatchScanner:
             right = int(w * 0.7)
             upper_half = upper[:, left:right, :]
 
-            try:
-                result = self.analyzer._analyze_cropped(
-                    upper_half,
-                    TIMER_SCAN_USER_PROMPT,
-                    TIMER_SCAN_SYSTEM_PROMPT,
-                    ts_label,
-                )
-            except Exception:
-                logger.exception("Timer scan failed for frame at %s", ts_label)
-                result = {}
-
-            timer_value = None
-            if isinstance(result, dict):
-                raw_timer = result.get("timer_remaining")
-                if raw_timer and isinstance(raw_timer, str):
-                    timer_value = parse_timer(raw_timer)
+            timer_str = read_timer(upper_half)
+            timer_value = parse_timer(timer_str) if timer_str else None
+            logger.debug("Timer scan at %s: %s -> %s", ts_label, timer_str, timer_value)
 
             if timer_value is not None:
                 total_duration, duration_type = determine_rule(timer_value)
