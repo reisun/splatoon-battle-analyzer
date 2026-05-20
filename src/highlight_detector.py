@@ -346,7 +346,7 @@ class HighlightDetector:
             1 for _, r in results_a
             if isinstance(r, dict) and r.get("has_count_rail", False)
         )
-        count_swapped = rail_count > total_a / 2
+        count_swapped = rail_count > total_a * 0.7
         if count_swapped:
             for _, r in results_a:
                 if isinstance(r, dict):

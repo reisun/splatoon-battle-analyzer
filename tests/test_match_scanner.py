@@ -124,8 +124,18 @@ class TestClusterReadings:
         assert matches == []
         assert resolved == []
 
-    def test_single_reading(self) -> None:
+    def test_single_reading_filtered(self) -> None:
+        """A single reading is filtered out (cluster size < 2)."""
         readings = [self._make_reading(120.0, 190.0)]
+        matches, _ = cluster_readings(readings)
+        assert len(matches) == 0
+
+    def test_two_readings_same_match(self) -> None:
+        """Two readings from the same match form a valid cluster."""
+        readings = [
+            self._make_reading(120.0, 190.0),  # start = 120 - 110 = 10
+            self._make_reading(150.0, 160.0),  # start = 150 - 140 = 10
+        ]
         matches, _ = cluster_readings(readings)
         assert len(matches) == 1
         assert matches[0].duration_type == "5min"
@@ -160,7 +170,10 @@ class TestClusterReadings:
 
     def test_negative_start_clamped(self) -> None:
         """Negative calculated start is clamped to 0."""
-        readings = [self._make_reading(2.0, 295.0)]  # start = -3.0
+        readings = [
+            self._make_reading(2.0, 295.0),  # start = 2 - 5 = -3.0
+            self._make_reading(32.0, 265.0),  # start = 32 - 35 = -3.0
+        ]
         matches, _ = cluster_readings(readings)
         assert len(matches) == 1
         assert matches[0].start_seconds == 0.0
@@ -191,7 +204,9 @@ class TestClusterReadings:
         """Output is sorted by start_seconds even when input is not."""
         readings = [
             self._make_reading(430.0, 270.0),  # start = 400
+            self._make_reading(460.0, 240.0),  # start = 400
             self._make_reading(40.0, 270.0),  # start = 10
+            self._make_reading(70.0, 240.0),  # start = 10
         ]
         matches, _ = cluster_readings(readings)
         assert matches[0].start_seconds < matches[1].start_seconds

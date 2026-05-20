@@ -280,7 +280,7 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
 
 class MatchScanRequest(BaseModel):
     file_path: str = Field(description="Absolute path to the video file on server")
-    interval: float = Field(default=30.0, description="Frame scan interval (seconds)")
+    interval: float = Field(default=20.0, description="Frame scan interval (seconds)")
     model: str | None = Field(default=None, description="Claude model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
 
