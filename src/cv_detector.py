@@ -36,7 +36,7 @@ _DEATH_TEMPLATE_YELLOW = _load_template("復活_黄.png")
 _DEATH_TEMPLATE_BLACK = _load_template("復活_黒.png")
 
 # Threshold for template matching confidence
-_MATCH_THRESHOLD = 0.55
+_MATCH_THRESHOLD = 0.7
 
 # Scales to try for multi-scale template matching
 _SCALES = [0.8, 1.0, 1.2]
@@ -112,10 +112,32 @@ def detect_kills(frame: np.ndarray) -> int:
 def detect_death(frame: np.ndarray) -> bool:
     """Detect whether the player is dead from the lower 30% crop.
 
-    Currently disabled due to high false-positive rate with template matching.
-    Returns False unconditionally. Kill detection alone provides sufficient
-    highlight scoring signal.
+    Searches the right 40% of the frame for '復活' templates.
+
+    Args:
+        frame: Lower 30% crop of a half-resized game frame (BGR).
+
+    Returns:
+        True if death text is detected, False otherwise.
     """
+    if _DEATH_TEMPLATE_YELLOW is None and _DEATH_TEMPLATE_BLACK is None:
+        return False
+
+    h, w = frame.shape[:2]
+    right_region = frame[:, int(w * 0.6) :, :]
+    gray = (
+        cv2.cvtColor(right_region, cv2.COLOR_BGR2GRAY)
+        if len(right_region.shape) == 3
+        else right_region
+    )
+
+    for tmpl in [_DEATH_TEMPLATE_YELLOW, _DEATH_TEMPLATE_BLACK]:
+        if tmpl is None:
+            continue
+        matches = _multi_scale_match(gray, tmpl)
+        if matches:
+            return True
+
     return False
 
 
