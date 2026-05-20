@@ -235,6 +235,7 @@ class HighlightDetector:
         end_seconds: float | None = None,
         duration_type: str | None = None,
         progress_callback: ProgressCallback | None = None,
+        pre_analyzed: dict[float, dict] | None = None,
     ) -> list[HighlightSegment]:
         video_path = Path(video_path)
         scan_start = start_seconds or 0.0
@@ -251,6 +252,7 @@ class HighlightDetector:
             scan_start,
             end_seconds,
             progress_callback,
+            pre_analyzed,
         )
 
     def _detect_nawabari(
@@ -299,15 +301,45 @@ class HighlightDetector:
         }
         return self._finalize(results)
 
+    @staticmethod
+    def _find_pre_analyzed(
+        ts: float, pre_analyzed: dict[float, dict] | None, tolerance: float = 2.0
+    ) -> dict | None:
+        """Look up pre-analyzed data for a timestamp within tolerance."""
+        if not pre_analyzed:
+            return None
+        if ts in pre_analyzed:
+            return pre_analyzed[ts]
+        for key in pre_analyzed:
+            if abs(key - ts) <= tolerance:
+                return pre_analyzed[key]
+        return None
+
     def _detect_ranked(
         self,
         video_path: Path,
         scan_start: float,
         end_seconds: float | None,
         progress_callback: ProgressCallback | None,
+        pre_analyzed: dict[float, dict] | None = None,
     ) -> list[HighlightSegment]:
         """ガチルール: Phase A (上半分15秒) -> Phase B (下半分5秒, 全フレーム)."""
         phase_a_interval = 15.0
+        original_scan_start = scan_start
+
+        # Snap Phase A start to scan grid so frames align for reuse.
+        # Scan uses 30s intervals from video start (0, 30, 60, ...).
+        # Phase A at 15s intervals: every other frame hits the 30s grid.
+        if pre_analyzed and scan_start > 0:
+            scan_interval = 30.0
+            snapped = round(scan_start / scan_interval) * scan_interval
+            if snapped < scan_start:
+                snapped += scan_interval
+            scan_start = snapped
+            logger.info(
+                "Phase A start snapped: %.1f -> %.1f (scan grid alignment)",
+                original_scan_start, scan_start,
+            )
 
         # --- Phase A: upper-only at 15s intervals ---
         frames_a = extract_frames(
@@ -320,16 +352,22 @@ class HighlightDetector:
         total_a = len(frames_a)
         done_count = [0]
         results_a: list[tuple[float, dict | str]] = [None] * total_a  # type: ignore[list-item]
+        reused_count = [0]
 
         def _analyze_upper(index: int) -> None:
             ts = scan_start + index * phase_a_interval
-            label = self._format_timestamp(ts)
-            try:
-                result = self.analyzer.analyze_frame_upper_only(frames_a[index], label)
-            except Exception:
-                logger.exception("Phase A failed for frame at %s", label)
-                result = {"my_team_count": None, "enemy_team_count": None, "kills": 0}
-            results_a[index] = (ts, result)
+            cached = self._find_pre_analyzed(ts, pre_analyzed)
+            if cached is not None:
+                results_a[index] = (ts, dict(cached))
+                reused_count[0] += 1
+            else:
+                label = self._format_timestamp(ts)
+                try:
+                    result = self.analyzer.analyze_frame_upper_only(frames_a[index], label)
+                except Exception:
+                    logger.exception("Phase A failed for frame at %s", label)
+                    result = {"my_team_count": None, "enemy_team_count": None, "kills": 0}
+                results_a[index] = (ts, result)
             done_count[0] += 1
             if progress_callback:
                 progress_callback(1, done_count[0], total_a)
@@ -338,6 +376,11 @@ class HighlightDetector:
             futures = [executor.submit(_analyze_upper, i) for i in range(total_a)]
             for future in as_completed(futures):
                 future.result()
+
+        logger.info(
+            "Phase A: %d/%d frames reused from scan, %d new LLM calls",
+            reused_count[0], total_a, total_a - reused_count[0],
+        )
 
         # Score Phase A to get score_count_gain values
         scored_a = self._score_frames(list(results_a))
@@ -362,21 +405,21 @@ class HighlightDetector:
             # Re-score after swap
             scored_a = self._score_frames(list(results_a))
 
-        # Phase A timestamps on 15s grid (also on 5s grid)
+        # Phase A timestamps on 15s grid (15 is a multiple of 5, so on 5s grid too)
         phase_a_ts_set: set[float] = {sf.timestamp for sf in scored_a}
 
-        # --- Phase B: extract all frames at 5s intervals ---
+        # --- Phase B: extract all frames at 5s intervals (from original match start) ---
         frames_b = extract_frames(
             video_path=video_path,
             interval_seconds=self.interval,
             no_save=True,
-            start_seconds=scan_start if scan_start else None,
+            start_seconds=original_scan_start if original_scan_start else None,
             end_seconds=end_seconds,
         )
         total_b_grid = len(frames_b)
 
-        # Map 5s grid indices to timestamps
-        b_timestamps = [scan_start + i * self.interval for i in range(total_b_grid)]
+        # Map 5s grid indices to timestamps (from original match start)
+        b_timestamps = [original_scan_start + i * self.interval for i in range(total_b_grid)]
 
         # Analyze ALL frames in Phase B
         phase_b_indices = list(range(total_b_grid))

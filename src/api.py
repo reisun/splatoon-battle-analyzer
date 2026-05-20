@@ -2,7 +2,13 @@
 
 import asyncio
 import logging
+import os
 from pathlib import Path
+
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -10,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.highlight_detector import FrameAnalysis, HighlightDetector
 from src.job_store import JobStatus, JobStore
-from src.match_scanner import MatchInfo, MatchScanner, ScanResult
+from src.match_scanner import MatchInfo, MatchScanner, ScanFrameAnalysis, ScanResult
 from src.scoring_config import load_scoring_config
 
 logger = logging.getLogger(__name__)
@@ -32,6 +38,7 @@ class HighlightRequest(BaseModel):
     model: str | None = Field(default=None, description="Claude model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
     duration_type: str | None = Field(default=None, description="Match rule type (5min/3min)")
+    scan_job_id: str | None = Field(default=None, description="Scan job ID to reuse frame analyses")
 
 
 class SegmentResult(BaseModel):
@@ -206,9 +213,32 @@ async def create_highlight_job(request: HighlightRequest) -> JobCreateResponse:
     return JobCreateResponse(job_id=job.job_id)
 
 
+def _build_pre_analyzed(scan_job_id: str | None) -> dict[float, dict] | None:
+    """Look up scan job result and build pre-analyzed frame data mapping."""
+    if not scan_job_id:
+        return None
+    scan_job = job_store.get(scan_job_id)
+    if not scan_job or scan_job.status != JobStatus.COMPLETED or not scan_job.result:
+        logger.warning("Scan job %s not found or not completed", scan_job_id)
+        return None
+    frame_analyses = scan_job.result.get("frame_analyses", [])
+    if not frame_analyses:
+        return None
+    mapping: dict[float, dict] = {}
+    for fa in frame_analyses:
+        ts = fa["frame_timestamp"]
+        mapping[ts] = {
+            "my_team_count": fa.get("my_team_count"),
+            "enemy_team_count": fa.get("enemy_team_count"),
+            "has_count_rail": fa.get("has_count_rail", False),
+        }
+    return mapping
+
+
 def _run_job(job_id: str, request: HighlightRequest) -> None:
     job_store.mark_running(job_id)
     try:
+        pre_analyzed = _build_pre_analyzed(request.scan_job_id)
         analyzer = BattleAnalyzer(model=request.model, concurrency=request.concurrency)
         detector = HighlightDetector(
             analyzer=analyzer,
@@ -224,6 +254,7 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
             end_seconds=request.end,
             duration_type=request.duration_type,
             progress_callback=on_progress,
+            pre_analyzed=pre_analyzed,
         )
 
         result = HighlightResponse(
@@ -280,7 +311,7 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
 
 class MatchScanRequest(BaseModel):
     file_path: str = Field(description="Absolute path to the video file on server")
-    interval: float = Field(default=20.0, description="Frame scan interval (seconds)")
+    interval: float = Field(default=30.0, description="Frame scan interval (seconds)")
     model: str | None = Field(default=None, description="Claude model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
 
@@ -299,9 +330,17 @@ class TimerReadingResult(BaseModel):
     match_start: float
 
 
+class ScanFrameAnalysisResult(BaseModel):
+    frame_timestamp: float
+    my_team_count: int | None
+    enemy_team_count: int | None
+    has_count_rail: bool
+
+
 class MatchScanResponse(BaseModel):
     matches: list[MatchResult]
     readings: list[TimerReadingResult] = Field(default_factory=list)
+    frame_analyses: list[ScanFrameAnalysisResult] = Field(default_factory=list)
 
 
 class MatchScanJobCreateResponse(BaseModel):
@@ -369,6 +408,15 @@ def _run_scan_job(job_id: str, request: MatchScanRequest) -> None:
                     match_start=r.match_start,
                 )
                 for r in scan_result.readings
+            ],
+            frame_analyses=[
+                ScanFrameAnalysisResult(
+                    frame_timestamp=fa.frame_timestamp,
+                    my_team_count=fa.my_team_count,
+                    enemy_team_count=fa.enemy_team_count,
+                    has_count_rail=fa.has_count_rail,
+                )
+                for fa in scan_result.frame_analyses
             ],
         )
         job_store.mark_completed(job_id, result.model_dump())
