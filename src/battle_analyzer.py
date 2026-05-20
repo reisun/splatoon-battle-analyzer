@@ -78,24 +78,21 @@ UPPER_HALF_SYSTEM_PROMPT = """\
 
 LOWER_HALF_SYSTEM_PROMPT = """\
 あなたはスプラトゥーンのゲーム画面の下部を分析する専門AIです。
-2枚の画像が提供されます:
-- 1枚目: ゲーム画面下部の中央40%幅（キル判定用）
-- 2枚目: ゲーム画面下部の右端30%幅（デス判定用）
-
+この画像はゲーム画面の下部30%のみをクロップしたものです。
 以下のルールに従ってJSON形式で回答してください。
 
 ■ UI要素の位置:
-- 1枚目（中央）:
+- 画面下部中央:
     直近で倒したプレイヤーの名前「◯◯ をたおした！」と表示される
     薄い透過黒背景に白文字
     周囲に別の表示が重なることが多いため混同注意。
     「◯◯ をたおした！」の完全一致で判断すること
-- 2枚目（右端）:
+- 画面右下:
     デス中は「復活まであと◯◯秒」と表示される
 
 ■ 各項目:
-- kills: (0~4) 1枚目の画像から「◯◯ をたおした！」の完全一致の数で判断する。複数ある場合はその数をカウントする。不明瞭な場合はカウントしない
-- is_dead: (true/false) 2枚目の画像から判定。「復活まであと」の表示や画面暗転があればtrue。不明瞭な場合はfalse
+- kills: (0~4)「◯◯ をたおした！」の完全一致の数で判断する。複数ある場合はその数をカウントする。不明瞭な場合はカウントしない
+- is_dead: (true/false) 自プレイヤーがデス中か？「復活まであと」の表示や画面暗転があればtrue。不明瞭な場合はfalse
 
 ■ 出力フォーマット（JSONのみ、他のテキスト不可）:
 {
@@ -105,7 +102,7 @@ LOWER_HALF_SYSTEM_PROMPT = """\
 """
 
 UPPER_HALF_USER_PROMPT = "この画像（ゲーム画面の上部中央）を分析してJSON形式で回答してください。"
-LOWER_HALF_USER_PROMPT = "2枚の画像（1枚目: キル判定用の中央部分、2枚目: デス判定用の右端部分）を分析してJSON形式で回答してください。"
+LOWER_HALF_USER_PROMPT = "この画像（ゲーム画面の下部30%）を分析してJSON形式で回答してください。"
 
 FRAME_ANALYSIS_SYSTEM_PROMPT = UPPER_HALF_SYSTEM_PROMPT
 FULL_FRAME_USER_PROMPT = "この画像を分析してJSON形式で回答してください。"
@@ -343,9 +340,7 @@ class BattleAnalyzer:
         h, w = frame.shape[:2]
         upper = frame[: int(h * 0.3), :, :]
         upper_half = upper[:, int(w * 0.2) : int(w * 0.8), :]
-        lower = frame[int(h * 0.7) :, :, :]
-        kill_crop = lower[:, int(w * 0.3) : int(w * 0.7), :]
-        death_crop = lower[:, int(w * 0.7) :, :]
+        lower_half = frame[int(h * 0.7) :, :, :]
 
         logger.info("Analyzing frame at %s (split mode)", timestamp)
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -357,8 +352,8 @@ class BattleAnalyzer:
                 timestamp,
             )
             lower_future = executor.submit(
-                self._analyze_cropped_multi,
-                [kill_crop, death_crop],
+                self._analyze_cropped,
+                lower_half,
                 LOWER_HALF_USER_PROMPT,
                 LOWER_HALF_SYSTEM_PROMPT,
                 timestamp,
@@ -389,16 +384,14 @@ class BattleAnalyzer:
         return merged
 
     def analyze_frame_lower_only(self, frame: np.ndarray, timestamp: str) -> dict:
-        """Analyze only the lower half using two cropped images (kills + death)."""
+        """Analyze only the lower half (skip game count for Nawabari)."""
         frame = _half_resize(frame)
-        h, w = frame.shape[:2]
-        lower = frame[int(h * 0.7) :, :, :]
-        kill_crop = lower[:, int(w * 0.3) : int(w * 0.7), :]
-        death_crop = lower[:, int(w * 0.7) :, :]
+        h = frame.shape[0]
+        lower_half = frame[int(h * 0.7) :, :, :]
 
-        logger.info("Analyzing frame at %s (lower-only mode, 2 images)", timestamp)
-        lower_result = self._analyze_cropped_multi(
-            [kill_crop, death_crop],
+        logger.info("Analyzing frame at %s (lower-only mode)", timestamp)
+        lower_result = self._analyze_cropped(
+            lower_half,
             LOWER_HALF_USER_PROMPT,
             LOWER_HALF_SYSTEM_PROMPT,
             timestamp,
