@@ -14,6 +14,7 @@ from pathlib import Path
 
 from src.battle_analyzer import BattleAnalyzer, _half_resize
 from src.frame_extractor import extract_frames
+from src.highlight_detector import _isotonic_decreasing, _median_smooth
 
 ScanProgressCallback = Callable[[int, int], None]  # (frames_done, frames_total)
 
@@ -214,6 +215,8 @@ def cluster_readings(
 
     matches: list[MatchInfo] = []
     for cluster in best_clusters.values():
+        if len(cluster) < 2:
+            continue
         starts = [r.match_start for r in cluster]
         median_start = statistics.median(starts)
 
@@ -241,15 +244,68 @@ def cluster_readings(
     return matches, resolved
 
 
+def _normalize_timer_readings(readings: list[TimerReading]) -> list[TimerReading]:
+    """Apply median smoothing + isotonic decreasing regression to timer values.
+
+    Groups readings by initial cluster assignment (sorted by match_start,
+    grouped within CLUSTER_TOLERANCE), then normalizes timer_seconds within
+    each group so they monotonically decrease over time.
+    """
+    if not readings:
+        return readings
+
+    # Sort by match_start to form initial groups
+    sorted_readings = sorted(readings, key=lambda r: r.match_start)
+
+    # Group within CLUSTER_TOLERANCE
+    groups: list[list[TimerReading]] = []
+    current_group: list[TimerReading] = [sorted_readings[0]]
+    for r in sorted_readings[1:]:
+        if abs(r.match_start - current_group[-1].match_start) <= CLUSTER_TOLERANCE:
+            current_group.append(r)
+        else:
+            groups.append(current_group)
+            current_group = [r]
+    groups.append(current_group)
+
+    normalized: list[TimerReading] = []
+    for group in groups:
+        # Sort by frame_timestamp within each group
+        group.sort(key=lambda r: r.frame_timestamp)
+
+        # Extract timer_seconds as int values for smoothing functions
+        timer_values: list[int | None] = [int(r.timer_seconds) for r in group]
+
+        # Apply median smoothing then isotonic decreasing regression
+        smoothed = _median_smooth(timer_values)
+        fitted = _isotonic_decreasing(smoothed)
+
+        for i, r in enumerate(group):
+            norm_timer = float(fitted[i]) if fitted[i] is not None else r.timer_seconds
+            total_duration, duration_type = determine_rule(norm_timer)
+            match_start = calc_match_start(r.frame_timestamp, norm_timer, total_duration)
+            normalized.append(
+                TimerReading(
+                    frame_timestamp=r.frame_timestamp,
+                    timer_seconds=norm_timer,
+                    total_duration=total_duration,
+                    duration_type=duration_type,
+                    match_start=match_start,
+                )
+            )
+
+    return normalized
+
+
 class MatchScanner:
     """Scan a video recording to detect individual match boundaries."""
 
-    def __init__(self, analyzer: BattleAnalyzer, interval: float = 30.0) -> None:
+    def __init__(self, analyzer: BattleAnalyzer, interval: float = 20.0) -> None:
         """Initialize the scanner.
 
         Args:
             analyzer: BattleAnalyzer instance for frame analysis.
-            interval: Frame extraction interval in seconds (default: 30).
+            interval: Frame extraction interval in seconds (default: 20).
         """
         self.analyzer = analyzer
         self.interval = interval
@@ -334,6 +390,8 @@ class MatchScanner:
             len(valid_readings),
             total_frames,
         )
+
+        valid_readings = _normalize_timer_readings(valid_readings)
 
         matches, resolved_readings = cluster_readings(valid_readings)
         return ScanResult(matches=matches, readings=resolved_readings)

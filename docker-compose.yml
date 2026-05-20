@@ -10,7 +10,6 @@ services:
       - .env
     environment:
       - AGENT_GATEWAY_URL=http://llm-internal-proxy/agent
-    command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     working_dir: /app
     restart: unless-stopped
     networks:
