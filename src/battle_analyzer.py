@@ -45,7 +45,7 @@ def _save_temp_frame(frame: np.ndarray) -> str:
 
 UPPER_HALF_SYSTEM_PROMPT = """\
 あなたはスプラトゥーンのゲーム画面の上部を分析する専門AIです。
-この画像はゲーム画面の上部30%のみをクロップしたものです。
+この画像はゲーム画面の上部30%・中央60%幅をクロップしたものです。
 以下のルールに従ってJSON形式で回答してください。
 
 ■ UI要素の位置:
@@ -101,7 +101,7 @@ LOWER_HALF_SYSTEM_PROMPT = """\
 }
 """
 
-UPPER_HALF_USER_PROMPT = "この画像（ゲーム画面の上部30%）を分析してJSON形式で回答してください。"
+UPPER_HALF_USER_PROMPT = "この画像（ゲーム画面の上部中央）を分析してJSON形式で回答してください。"
 LOWER_HALF_USER_PROMPT = "この画像（ゲーム画面の下部30%）を分析してJSON形式で回答してください。"
 
 FRAME_ANALYSIS_SYSTEM_PROMPT = UPPER_HALF_SYSTEM_PROMPT
@@ -153,15 +153,17 @@ class BattleAnalyzer:
     def _call_agent_gateway(
         self,
         prompt: str,
-        image_path: str,
+        image_path: str | None = None,
         system_prompt: str | None = None,
+        image_paths: list[str] | None = None,
     ) -> str:
-        """Call Agent Gateway API with an image file.
+        """Call Agent Gateway API with image file(s).
 
         Args:
             prompt: Text prompt to send.
-            image_path: Path to the image file for analysis.
+            image_path: Path to a single image file for analysis.
             system_prompt: Optional system prompt for the model.
+            image_paths: Paths to multiple image files for analysis.
 
         Returns:
             Response text from the model.
@@ -175,9 +177,12 @@ class BattleAnalyzer:
             "prompt": prompt,
             "model": self.model,
             "timeout": self.timeout,
-            "image_path": image_path,
             "agent_options": {"allowed_tools": ["Read"]},
         }
+        if image_paths:
+            payload["image_paths"] = image_paths
+        elif image_path:
+            payload["image_path"] = image_path
         if system_prompt:
             payload["system_prompt"] = system_prompt
 
@@ -297,6 +302,24 @@ class BattleAnalyzer:
         finally:
             os.unlink(tmp_path)
 
+    def _analyze_cropped_multi(
+        self,
+        frames: list[np.ndarray],
+        user_prompt: str,
+        system_prompt: str,
+        timestamp: str,
+    ) -> dict | str:
+        """Analyze multiple cropped frame regions in a single request."""
+        tmp_paths = [_save_temp_frame(f) for f in frames]
+        try:
+            result = self._call_agent_gateway(
+                user_prompt, system_prompt=system_prompt, image_paths=tmp_paths
+            )
+            return parse_llm_response(result)
+        finally:
+            for p in tmp_paths:
+                os.unlink(p)
+
     @staticmethod
     def _merge_results(upper: dict | str, lower: dict | str) -> dict:
         """Merge upper/lower half analysis results into a single dict."""
@@ -314,8 +337,9 @@ class BattleAnalyzer:
     def analyze_frame_split(self, frame: np.ndarray, timestamp: str) -> dict:
         """Analyze a frame by splitting into upper/lower halves in parallel."""
         frame = _half_resize(frame)
-        h = frame.shape[0]
-        upper_half = frame[: int(h * 0.3), :, :]
+        h, w = frame.shape[:2]
+        upper = frame[: int(h * 0.3), :, :]
+        upper_half = upper[:, int(w * 0.2) : int(w * 0.8), :]
         lower_half = frame[int(h * 0.7) :, :, :]
 
         logger.info("Analyzing frame at %s (split mode)", timestamp)
@@ -344,8 +368,9 @@ class BattleAnalyzer:
     def analyze_frame_upper_only(self, frame: np.ndarray, timestamp: str) -> dict:
         """Analyze only the upper half (game count only, skip kills/death)."""
         frame = _half_resize(frame)
-        h = frame.shape[0]
-        upper_half = frame[: int(h * 0.3), :, :]
+        h, w = frame.shape[:2]
+        upper = frame[: int(h * 0.3), :, :]
+        upper_half = upper[:, int(w * 0.2) : int(w * 0.8), :]
 
         logger.info("Analyzing frame at %s (upper-only mode)", timestamp)
         upper_result = self._analyze_cropped(

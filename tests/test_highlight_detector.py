@@ -416,25 +416,26 @@ class TestDetectFlow:
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")
-    def test_ranked_no_gain_skips_phase_b(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
-        """When no score_count_gain > 1, Phase B has 0 frames."""
+    def test_ranked_phase_b_all_frames(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """Phase B always analyzes all frames regardless of score_count_gain."""
         phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
         phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
         mock_extract.side_effect = [phase_a_frames, phase_b_frames]
 
-        # All same counts -> no gain
+        # All same counts -> no gain, but Phase B still runs for all
         def mock_upper(frame, timestamp):
             return {"my_team_count": 100, "enemy_team_count": 100, "kills": 0, "is_dead": False}
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
         analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.return_value = {"kills": 0, "is_dead": False}
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4", duration_type="5min")
 
-        assert detector.scan_summary["phase_b_frames"] == 0
-        analyzer.analyze_frame_lower_only.assert_not_called()
+        assert detector.scan_summary["phase_b_frames"] == 12
+        assert analyzer.analyze_frame_lower_only.call_count == 12
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
     @patch("src.highlight_detector.extract_frames")

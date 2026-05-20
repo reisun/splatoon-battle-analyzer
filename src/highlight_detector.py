@@ -1,6 +1,6 @@
 """Highlight detection for Splatoon gameplay videos.
 
-Ranked (5min): Phase A (upper 15s) -> Phase B (lower 5s, gain>1 regions).
+Ranked (5min): Phase A (upper 15s) -> Phase B (lower 5s, all frames).
 Nawabari (3min): Single pass lower-only at 5s intervals.
 """
 
@@ -305,7 +305,7 @@ class HighlightDetector:
         end_seconds: float | None,
         progress_callback: ProgressCallback | None,
     ) -> list[HighlightSegment]:
-        """ガチルール: Phase A (上半分15秒) -> Phase B (下半分5秒, gain>1区間)."""
+        """ガチルール: Phase A (上半分15秒) -> Phase B (下半分5秒, 全フレーム)."""
         phase_a_interval = 15.0
 
         # --- Phase A: upper-only at 15s intervals ---
@@ -361,16 +361,10 @@ class HighlightDetector:
             # Re-score after swap
             scored_a = self._score_frames(list(results_a))
 
-        # --- Determine Phase B regions (score_count_gain > 1 or enemy_score_gain > 1) ---
-        interesting_timestamps: set[float] = set()
-        for sf in scored_a:
-            if sf.raw.get("score_count_gain", 0) > 1 or sf.raw.get("enemy_score_gain", 0) > 1:
-                interesting_timestamps.add(sf.timestamp)
-
         # Phase A timestamps on 15s grid (also on 5s grid)
         phase_a_ts_set: set[float] = {sf.timestamp for sf in scored_a}
 
-        # Build 5s grid timestamps and determine which need Phase B analysis
+        # --- Phase B: extract all frames at 5s intervals ---
         frames_b = extract_frames(
             video_path=video_path,
             interval_seconds=self.interval,
@@ -383,20 +377,8 @@ class HighlightDetector:
         # Map 5s grid indices to timestamps
         b_timestamps = [scan_start + i * self.interval for i in range(total_b_grid)]
 
-        # Determine which 5s frames need lower-half analysis
-        # A frame needs Phase B if any interesting Phase A timestamp is within +-15s
-        phase_b_indices: list[int] = []
-        for i, ts in enumerate(b_timestamps):
-            if ts in phase_a_ts_set:
-                # Phase A frame: reuse upper data, still need lower if interesting
-                pass
-            for interesting_ts in interesting_timestamps:
-                if abs(ts - interesting_ts) <= phase_a_interval:
-                    phase_b_indices.append(i)
-                    break
-
-        # Remove duplicates and sort
-        phase_b_indices = sorted(set(phase_b_indices))
+        # Analyze ALL frames in Phase B
+        phase_b_indices = list(range(total_b_grid))
         phase_b_total = len(phase_b_indices)
 
         logger.info(
@@ -405,7 +387,7 @@ class HighlightDetector:
             phase_b_total,
         )
 
-        # --- Phase B: lower-only at 5s intervals for interesting regions ---
+        # --- Phase B: lower-only at 5s intervals for all frames ---
         done_count[0] = 0
         phase_b_results: dict[float, dict] = {}
 
