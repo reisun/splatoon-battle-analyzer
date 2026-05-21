@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 import cv2
 import numpy as np
 import pytest
-import requests
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available, parse_llm_response
 
@@ -43,199 +42,180 @@ class TestParseLlmResponse:
         assert result == ""
 
 
+def _make_mock_client(response_text: str) -> MagicMock:
+    """Create a mock Gemini client that returns the given text."""
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = response_text
+    mock_client.models.generate_content.return_value = mock_response
+    return mock_client
+
+
 class TestBattleAnalyzer:
     """Tests for BattleAnalyzer class."""
 
-    def test_init_default_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @patch("src.battle_analyzer._create_client")
+    def test_init_default_model(
+        self, mock_create: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Initialize with default model."""
-        monkeypatch.delenv("CLAUDE_MODEL", raising=False)
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        mock_create.return_value = MagicMock()
         analyzer = BattleAnalyzer()
-        assert analyzer.model == "haiku"
+        assert analyzer.model == "gemini-2.5-flash-lite"
 
-    def test_init_with_env_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @patch("src.battle_analyzer._create_client")
+    def test_init_with_env_model(
+        self, mock_create: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Initialize with model from environment variable."""
-        monkeypatch.setenv("CLAUDE_MODEL", "sonnet")
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        mock_create.return_value = MagicMock()
         analyzer = BattleAnalyzer()
-        assert analyzer.model == "sonnet"
+        assert analyzer.model == "gemini-2.5-flash"
 
-    def test_init_with_explicit_model(self) -> None:
+    @patch("src.battle_analyzer._create_client")
+    def test_init_with_explicit_model(
+        self, mock_create: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Initialize with explicitly provided model."""
-        analyzer = BattleAnalyzer(model="opus")
-        assert analyzer.model == "opus"
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        mock_create.return_value = MagicMock()
+        analyzer = BattleAnalyzer(model="gemini-2.0-flash")
+        assert analyzer.model == "gemini-2.0-flash"
 
-    def test_init_concurrency_default(self) -> None:
+    @patch("src.battle_analyzer._create_client")
+    def test_init_concurrency_default(
+        self, mock_create: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Default concurrency is 4."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        mock_create.return_value = MagicMock()
         analyzer = BattleAnalyzer()
         assert analyzer.concurrency == 4
 
-    def test_init_concurrency_custom(self) -> None:
+    @patch("src.battle_analyzer._create_client")
+    def test_init_concurrency_custom(
+        self, mock_create: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Custom concurrency value."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        mock_create.return_value = MagicMock()
         analyzer = BattleAnalyzer(concurrency=8)
         assert analyzer.concurrency == 8
 
-    def test_init_model_explicit_overrides_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @patch("src.battle_analyzer._create_client")
+    def test_init_model_explicit_overrides_env(
+        self, mock_create: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Explicit model parameter overrides environment variable."""
-        monkeypatch.setenv("CLAUDE_MODEL", "sonnet")
-        analyzer = BattleAnalyzer(model="opus")
-        assert analyzer.model == "opus"
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        mock_create.return_value = MagicMock()
+        analyzer = BattleAnalyzer(model="gemini-2.0-flash")
+        assert analyzer.model == "gemini-2.0-flash"
 
-    def test_analyze_frame_file_not_found(self) -> None:
+    @patch("src.battle_analyzer._create_client")
+    def test_analyze_frame_file_not_found(
+        self, mock_create: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Raise FileNotFoundError when image does not exist."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        mock_create.return_value = MagicMock()
         analyzer = BattleAnalyzer()
         with pytest.raises(FileNotFoundError, match="Image file not found"):
             analyzer.analyze_frame("/nonexistent/frame.jpg")
 
-    @patch("src.battle_analyzer.requests.get")
-    @patch("src.battle_analyzer.requests.post")
-    @patch("src.battle_analyzer.time.sleep")
+    @patch("src.battle_analyzer._create_client")
     def test_analyze_frame_success(
-        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
+        self, mock_create: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Successfully analyze a frame image."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         image_file = tmp_path / "frame_00m10s.jpg"
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         _, buf = cv2.imencode(".jpg", img)
         image_file.write_bytes(buf.tobytes())
 
-        mock_post_response = MagicMock()
-        mock_post_response.status_code = 202
-        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
-        mock_post.return_value = mock_post_response
+        mock_client = _make_mock_client('{"game_mode": "ナワバリバトル", "highlight_score": 5}')
+        mock_create.return_value = mock_client
 
-        mock_get_response = MagicMock()
-        mock_get_response.status_code = 200
-        mock_get_response.json.return_value = {
-            "status": "done",
-            "result": '{"game_mode": "ナワバリバトル", "highlight_score": 5}',
-        }
-        mock_get.return_value = mock_get_response
-
-        analyzer = BattleAnalyzer(model="haiku")
+        analyzer = BattleAnalyzer(model="gemini-2.5-flash-lite")
         result = analyzer.analyze_frame(image_file)
 
         assert isinstance(result, dict)
         assert result["game_mode"] == "ナワバリバトル"
         assert result["highlight_score"] == 5
-        mock_post.assert_called_once()
+        mock_client.models.generate_content.assert_called_once()
 
-        call_kwargs = mock_post.call_args
-        payload = call_kwargs[1]["json"]
-        assert payload["agent"] == "claude"
-        assert payload["model"] == "haiku"
+        call_kwargs = mock_client.models.generate_content.call_args
+        assert call_kwargs[1]["model"] == "gemini-2.5-flash-lite"
 
-    @patch("src.battle_analyzer.requests.get")
-    @patch("src.battle_analyzer.requests.post")
-    @patch("src.battle_analyzer.time.sleep")
+    @patch("src.battle_analyzer._create_client")
     def test_analyze_frame_returns_raw_on_parse_failure(
-        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
+        self, mock_create: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Return raw string when LLM response is not valid JSON."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         image_file = tmp_path / "frame_00m10s.jpg"
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         _, buf = cv2.imencode(".jpg", img)
         image_file.write_bytes(buf.tobytes())
 
-        mock_post_response = MagicMock()
-        mock_post_response.status_code = 202
-        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
-        mock_post.return_value = mock_post_response
+        mock_client = _make_mock_client("I cannot analyze this image clearly.")
+        mock_create.return_value = mock_client
 
-        mock_get_response = MagicMock()
-        mock_get_response.status_code = 200
-        mock_get_response.json.return_value = {
-            "status": "done",
-            "result": "I cannot analyze this image clearly.",
-        }
-        mock_get.return_value = mock_get_response
-
-        analyzer = BattleAnalyzer(model="haiku")
+        analyzer = BattleAnalyzer(model="gemini-2.5-flash-lite")
         result = analyzer.analyze_frame(image_file)
 
         assert isinstance(result, str)
         assert "cannot analyze" in result
 
-    @patch("src.battle_analyzer.requests.post")
-    def test_analyze_frame_gateway_error(self, mock_post: MagicMock, tmp_path: Path) -> None:
-        """Raise RuntimeError when Agent Gateway returns error."""
-        image_file = tmp_path / "frame_00m10s.jpg"
-        img = np.zeros((100, 100, 3), dtype=np.uint8)
-        _, buf = cv2.imencode(".jpg", img)
-        image_file.write_bytes(buf.tobytes())
-
-        mock_post_response = MagicMock()
-        mock_post_response.status_code = 500
-        mock_post_response.text = "Internal Server Error"
-        mock_post.return_value = mock_post_response
-
-        analyzer = BattleAnalyzer(model="haiku")
-        with pytest.raises(RuntimeError, match="Agent Gateway returned status 500"):
-            analyzer.analyze_frame(image_file)
-
-    @patch("src.battle_analyzer.requests.get")
-    @patch("src.battle_analyzer.requests.post")
-    @patch("src.battle_analyzer.time.sleep")
-    def test_analyze_frame_job_failed(
-        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
+    @patch("src.battle_analyzer._create_client")
+    def test_analyze_frame_api_error(
+        self, mock_create: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Raise RuntimeError when job fails."""
+        """Raise RuntimeError when Gemini API call fails."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         image_file = tmp_path / "frame_00m10s.jpg"
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         _, buf = cv2.imencode(".jpg", img)
         image_file.write_bytes(buf.tobytes())
 
-        mock_post_response = MagicMock()
-        mock_post_response.status_code = 202
-        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
-        mock_post.return_value = mock_post_response
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = Exception("API error")
+        mock_create.return_value = mock_client
 
-        mock_get_response = MagicMock()
-        mock_get_response.status_code = 200
-        mock_get_response.json.return_value = {
-            "status": "failed",
-            "error": "Authentication failed",
-        }
-        mock_get.return_value = mock_get_response
-
-        analyzer = BattleAnalyzer(model="haiku")
-        with pytest.raises(RuntimeError, match="Agent Gateway job failed"):
+        analyzer = BattleAnalyzer(model="gemini-2.5-flash-lite")
+        with pytest.raises(RuntimeError, match="Gemini API call failed"):
             analyzer.analyze_frame(image_file)
 
-    @patch("src.battle_analyzer.requests.get")
-    @patch("src.battle_analyzer.requests.post")
-    @patch("src.battle_analyzer.time.sleep")
+    @patch("src.battle_analyzer._create_client")
     def test_analyze_frame_from_memory(
-        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock
+        self, mock_create: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Analyze a frame from memory (numpy array)."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
 
-        mock_post_response = MagicMock()
-        mock_post_response.status_code = 202
-        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
-        mock_post.return_value = mock_post_response
+        mock_client = _make_mock_client('{"game_mode": "不明", "highlight_score": 1}')
+        mock_create.return_value = mock_client
 
-        mock_get_response = MagicMock()
-        mock_get_response.status_code = 200
-        mock_get_response.json.return_value = {
-            "status": "done",
-            "result": '{"game_mode": "不明", "highlight_score": 1}',
-        }
-        mock_get.return_value = mock_get_response
-
-        analyzer = BattleAnalyzer(model="haiku")
+        analyzer = BattleAnalyzer(model="gemini-2.5-flash-lite")
         result = analyzer.analyze_frame_from_memory(frame, "01m30s")
 
         assert isinstance(result, dict)
         assert result["game_mode"] == "不明"
-        mock_post.assert_called_once()
+        mock_client.models.generate_content.assert_called_once()
 
-    @patch("src.battle_analyzer.requests.get")
-    @patch("src.battle_analyzer.requests.post")
-    @patch("src.battle_analyzer.time.sleep")
+    @patch("src.battle_analyzer._create_client")
     def test_analyze_frames_multiple(
-        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
+        self, mock_create: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Analyze multiple frames and return structured results."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         paths = []
         for name in ["frame_00m00s.jpg", "frame_00m10s.jpg", "frame_00m20s.jpg"]:
             p = tmp_path / name
@@ -244,20 +224,10 @@ class TestBattleAnalyzer:
             p.write_bytes(buf.tobytes())
             paths.append(p)
 
-        mock_post_response = MagicMock()
-        mock_post_response.status_code = 202
-        mock_post_response.json.return_value = {"job_id": "test-job-123", "status": "queued"}
-        mock_post.return_value = mock_post_response
+        mock_client = _make_mock_client('{"game_mode": "ナワバリバトル"}')
+        mock_create.return_value = mock_client
 
-        mock_get_response = MagicMock()
-        mock_get_response.status_code = 200
-        mock_get_response.json.return_value = {
-            "status": "done",
-            "result": '{"game_mode": "ナワバリバトル"}',
-        }
-        mock_get.return_value = mock_get_response
-
-        analyzer = BattleAnalyzer(model="haiku", concurrency=1)
+        analyzer = BattleAnalyzer(model="gemini-2.5-flash-lite", concurrency=1)
         results = analyzer.analyze_frames(paths)
 
         assert len(results) == 3
@@ -266,9 +236,12 @@ class TestBattleAnalyzer:
         assert results[2]["timestamp"] == "00m20s"
         assert all(isinstance(r["analysis"], dict) for r in results)
 
-    @patch("src.battle_analyzer.requests.post")
-    def test_analyze_frames_handles_error(self, mock_post: MagicMock, tmp_path: Path) -> None:
+    @patch("src.battle_analyzer._create_client")
+    def test_analyze_frames_handles_error(
+        self, mock_create: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Handle analysis errors gracefully for individual frames."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         _, buf = cv2.imencode(".jpg", img)
 
@@ -278,25 +251,23 @@ class TestBattleAnalyzer:
         bad_frame = tmp_path / "frame_00m10s.jpg"
         bad_frame.write_bytes(buf.tobytes())
 
-        mock_post_response = MagicMock()
-        mock_post_response.status_code = 500
-        mock_post_response.text = "Internal Server Error"
-        mock_post.return_value = mock_post_response
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = Exception("API error")
+        mock_create.return_value = mock_client
 
-        analyzer = BattleAnalyzer(model="haiku", concurrency=1)
+        analyzer = BattleAnalyzer(model="gemini-2.5-flash-lite", concurrency=1)
         results = analyzer.analyze_frames([good_frame, bad_frame])
 
         assert len(results) == 2
         assert "[Error]" in results[0]["analysis"]
         assert "[Error]" in results[1]["analysis"]
 
-    @patch("src.battle_analyzer.requests.get")
-    @patch("src.battle_analyzer.requests.post")
-    @patch("src.battle_analyzer.time.sleep")
+    @patch("src.battle_analyzer._create_client")
     def test_analyze_frames_preserves_order(
-        self, mock_sleep: MagicMock, mock_post: MagicMock, mock_get: MagicMock, tmp_path: Path
+        self, mock_create: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Results are returned in the same order as input paths."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         paths = []
         for name in ["frame_00m00s.jpg", "frame_00m10s.jpg", "frame_00m20s.jpg"]:
             p = tmp_path / name
@@ -307,27 +278,17 @@ class TestBattleAnalyzer:
 
         call_count = [0]
 
-        def mock_post_fn(*args, **kwargs):
+        def mock_generate(*args, **kwargs):
             call_count[0] += 1
             resp = MagicMock()
-            resp.status_code = 202
-            resp.json.return_value = {"job_id": f"job-{call_count[0]}", "status": "queued"}
+            resp.text = f'{{"result": {call_count[0]}}}'
             return resp
 
-        mock_post.side_effect = mock_post_fn
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = mock_generate
+        mock_create.return_value = mock_client
 
-        def mock_get_fn(*args, **kwargs):
-            resp = MagicMock()
-            resp.status_code = 200
-            resp.json.return_value = {
-                "status": "done",
-                "result": f'{{"result": {call_count[0]}}}',
-            }
-            return resp
-
-        mock_get.side_effect = mock_get_fn
-
-        analyzer = BattleAnalyzer(model="haiku", concurrency=1)
+        analyzer = BattleAnalyzer(model="gemini-2.5-flash-lite", concurrency=1)
         results = analyzer.analyze_frames(paths)
 
         assert len(results) == 3
@@ -339,30 +300,17 @@ class TestBattleAnalyzer:
 class TestCheckApiKeyAvailable:
     """Tests for check_api_key_available function."""
 
-    @patch("src.battle_analyzer.requests.get")
-    def test_gateway_available(self, mock_get: MagicMock) -> None:
-        """Return True when Agent Gateway is available."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_get.return_value = mock_response
+    def test_key_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Return True when GEMINI_API_KEY is set."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         assert check_api_key_available() is True
 
-    @patch("src.battle_analyzer.requests.get")
-    def test_gateway_not_reachable(self, mock_get: MagicMock) -> None:
-        """Return False when Agent Gateway is not reachable."""
-        mock_get.side_effect = requests.ConnectionError("Connection refused")
+    def test_key_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Return False when GEMINI_API_KEY is not set."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         assert check_api_key_available() is False
 
-    @patch("src.battle_analyzer.requests.get")
-    def test_gateway_timeout(self, mock_get: MagicMock) -> None:
-        """Return False when health check times out."""
-        mock_get.side_effect = requests.Timeout("Request timed out")
-        assert check_api_key_available() is False
-
-    @patch("src.battle_analyzer.requests.get")
-    def test_gateway_error_status(self, mock_get: MagicMock) -> None:
-        """Return False when gateway returns non-200 status."""
-        mock_response = MagicMock()
-        mock_response.status_code = 503
-        mock_get.return_value = mock_response
+    def test_key_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Return False when GEMINI_API_KEY is empty string."""
+        monkeypatch.setenv("GEMINI_API_KEY", "")
         assert check_api_key_available() is False

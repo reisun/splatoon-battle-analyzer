@@ -551,7 +551,7 @@ class HighlightDetector:
                 )
             )
 
-            for i in range(best_idx, end_idx + 1):
+            for i in range(best_idx, min(end_idx + 2, n)):
                 scores[i] = 0
 
         segments.sort(key=lambda s: s.start_seconds)

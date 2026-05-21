@@ -29,7 +29,7 @@ class HighlightRequest(BaseModel):
     start: float | None = Field(default=None, description="Start time in seconds")
     end: float | None = Field(default=None, description="End time in seconds")
     interval: float = Field(default=5.0, description="Frame scan interval (seconds)")
-    model: str | None = Field(default=None, description="Claude model name")
+    model: str | None = Field(default=None, description="Gemini model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
     duration_type: str | None = Field(default=None, description="Match rule type (5min/3min)")
 
@@ -153,7 +153,7 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
         raise HTTPException(status_code=404, detail=f"Video file not found: {request.file_path}")
 
     if not check_api_key_available():
-        raise HTTPException(status_code=503, detail="Claude CLI is not available")
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
 
     analyzer = BattleAnalyzer(
         model=request.model,
@@ -199,7 +199,7 @@ async def create_highlight_job(request: HighlightRequest) -> JobCreateResponse:
         raise HTTPException(status_code=404, detail=f"Video file not found: {request.file_path}")
 
     if not check_api_key_available():
-        raise HTTPException(status_code=503, detail="Claude CLI is not available")
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
 
     job = job_store.create()
     asyncio.get_event_loop().run_in_executor(None, _run_job, job.job_id, request)
@@ -280,8 +280,8 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
 
 class MatchScanRequest(BaseModel):
     file_path: str = Field(description="Absolute path to the video file on server")
-    interval: float = Field(default=20.0, description="Frame scan interval (seconds)")
-    model: str | None = Field(default=None, description="Claude model name")
+    interval: float = Field(default=30.0, description="Frame scan interval (seconds)")
+    model: str | None = Field(default=None, description="Gemini model name")
     concurrency: int = Field(default=4, description="Concurrent API calls")
 
 
@@ -330,7 +330,7 @@ async def create_match_scan_job(request: MatchScanRequest) -> MatchScanJobCreate
         raise HTTPException(status_code=404, detail=f"Video file not found: {request.file_path}")
 
     if not check_api_key_available():
-        raise HTTPException(status_code=503, detail="Claude CLI is not available")
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
 
     job = job_store.create()
     asyncio.get_event_loop().run_in_executor(None, _run_scan_job, job.job_id, request)

@@ -2,7 +2,7 @@
 
 ## 1. 目的
 
-スプラトゥーンのプレイ動画を入力し、一定間隔でフレームを抽出した上で Claude Vision（Claude Code CLI 経由）により戦況を解析するツール。
+スプラトゥーンのプレイ動画を入力し、一定間隔でフレームを抽出した上で Gemini Vision API により戦況を解析するツール。
 
 以下の2つのインターフェースを提供する。
 
@@ -32,7 +32,7 @@
   [CLI pipeline]  [FastAPI API]
          |             |
          v             v
-[BattleAnalyzer] -- Claude Code CLI (subprocess)
+[BattleAnalyzer] -- Gemini Vision API (google-genai SDK)
          |             |
          +------+------+
                 |
@@ -51,7 +51,7 @@
 | API (`src/api.py`) | FastAPI エンドポイント、同期/非同期ジョブ管理 |
 | FrameSource (`src/frame_source.py`) | フレームソース抽象化（ファイル/ストリーム） |
 | Frame Extractor (`src/frame_extractor.py`) | 動画からのフレーム抽出、画像保存 |
-| Battle Analyzer (`src/battle_analyzer.py`) | Claude Code CLI 呼び出し、プロンプト定義、レスポンスパース |
+| Battle Analyzer (`src/battle_analyzer.py`) | Gemini Vision API 呼び出し、プロンプト定義、レスポンスパース |
 | Highlight Detector (`src/highlight_detector.py`) | スライディングウィンドウによるハイライト区間検出 |
 | Match Scanner (`src/match_scanner.py`) | タイマー読み取りによる試合境界スキャン |
 | Job Store (`src/job_store.py`) | インメモリ非同期ジョブ管理（スレッドセーフ） |
@@ -68,7 +68,7 @@ splatoon-battle-analyzer/
     cli.py                   # CLI 引数解析・パイプライン制御
     frame_source.py          # FrameSource ABC / FileFrameSource / StreamFrameSource
     frame_extractor.py       # フレーム抽出（OpenCV VideoCapture）
-    battle_analyzer.py       # Claude Code CLI 呼び出し、プロンプト定義
+    battle_analyzer.py       # Gemini Vision API 呼び出し、プロンプト定義
     highlight_detector.py    # ハイライト検出（スライディングウィンドウ）
     match_scanner.py         # 試合境界スキャン（タイマー読み取り）
     scoring_config.py        # スコアリング設定ローダー
@@ -103,16 +103,13 @@ splatoon-battle-analyzer/
 4. CLI モードでは `frame_{MM}m{SS}s.jpg` 形式で出力ディレクトリに保存（`--no-save` 指定時はメモリ保持）
 5. API モード / ハイライトモードでは常にメモリ上で保持（`no_save=True`）
 
-### 4.2 解析フロー（Claude Code CLI 経由）
+### 4.2 解析フロー（Gemini Vision API）
 
-1. `BattleAnalyzer` がモデル名（デフォルト: `haiku`）と並行数で初期化
-2. フレーム画像を一時ファイルとして保存
-3. `claude -p <prompt> --dangerously-skip-permissions --model <model>` を subprocess で実行
-4. Claude Vision がフレーム画像を読み取り、JSON 形式で戦況を返却
+1. `BattleAnalyzer` がモデル名（デフォルト: `gemini-2.5-flash-lite`）と並行数で初期化
+2. フレーム画像を `cv2.imencode()` でメモリ上の JPEG bytes に変換
+3. `google-genai` SDK で Gemini API を呼び出し（`response_mime_type="application/json"` で JSON 応答を強制）
+4. Gemini Vision がフレーム画像を分析し、JSON 形式で戦況を返却
 5. レスポンスから JSON をパースし、戦況データとして返却
-6. 一時ファイルを削除
-
-直接 Anthropic API（SDK）を呼び出すのではなく、Claude Code CLI を経由する点が特徴。
 
 ### 4.3 API フロー
 
@@ -129,7 +126,7 @@ Client --> GET /analyze/highlights/jobs/{job_id} --> JobStore --> Status/Result
 
 ### 4.4 並行フレーム分析
 
-`ThreadPoolExecutor` により複数フレームを並行して Claude Code CLI に送信する。`concurrency` パラメータ（デフォルト: 4）で同時実行数を制御。
+`ThreadPoolExecutor` により複数フレームを並行して Gemini API に送信する。`concurrency` パラメータ（デフォルト: 4）で同時実行数を制御。
 
 ## 5. ハイライト検出アルゴリズム
 
@@ -234,14 +231,14 @@ score_gain_window_seconds: 30 # 未来参照ウィンドウ（秒）
 | `end` | float or null | null | 解析終了時間（秒） |
 | `interval` | float | 5.0 | フレーム抽出間隔（秒） |
 | `threshold` | int | 100 | ハイライト判定の閾値 |
-| `model` | string or null | null | Claude モデル名（null の場合 env CLAUDE_MODEL or "haiku"） |
+| `model` | string or null | null | Gemini モデル名（null の場合 env GEMINI_MODEL or "gemini-2.5-flash-lite"） |
 | `concurrency` | int | 4 | 並行 API 呼び出し数 |
 
 **レスポンス (HighlightResponse):**
 ```json
 {
   "video": "filename.mp4",
-  "model": "haiku",
+  "model": "gemini-2.5-flash-lite",
   "highlights": [
     {
       "start_seconds": 30.0,
@@ -336,7 +333,7 @@ python -m src.cli --stream <rtmp_url> [options]
 | `--end` | No | None | 解析終了時間（秒） |
 | `--no-save` | No | False | フレームをディスクに保存せずメモリで処理 |
 | `--concurrency` | No | 4 | 並行 API 呼び出し数 |
-| `--model` | No | None | Claude モデル名（env CLAUDE_MODEL or "haiku"） |
+| `--model` | No | None | Gemini モデル名（env GEMINI_MODEL or "gemini-2.5-flash-lite"） |
 | `--output-format` | No | text | 出力フォーマット（text / json） |
 | `--output-file` | No | None | 出力先ファイルパス（省略時は stdout） |
 | `--mode` | No | timeline | 解析モード（timeline / highlight） |
@@ -347,7 +344,7 @@ python -m src.cli --stream <rtmp_url> [options]
 
 ## 8. 解析プロンプト設計
 
-Claude Vision に送信するプロンプトは以下の要素を JSON 形式で抽出するよう設計されている。
+Gemini Vision に送信するプロンプトは以下の要素を JSON 形式で抽出するよう設計されている。
 
 | フィールド | 型 | 範囲 | 説明 |
 |-----------|------|------|------|
@@ -362,7 +359,7 @@ Claude Vision に送信するプロンプトは以下の要素を JSON 形式で
 | `enemy_team_count` | int or null | - | 相手チームの生存人数（不明なら null） |
 | `description` | string | - | 現在の状況の説明 |
 
-プロンプトにはスプラトゥーンの UI 要素の位置（タイマー、イカランプ、ゲームカウント等）の説明を含め、Claude Vision が正確に戦況を読み取れるよう誘導している。
+プロンプトにはスプラトゥーンの UI 要素の位置（タイマー、イカランプ、ゲームカウント等）の説明を含め、Gemini Vision が正確に戦況を読み取れるよう誘導している。
 
 ## 9. エラーハンドリング
 
@@ -376,8 +373,8 @@ Claude Vision に送信するプロンプトは以下の要素を JSON 形式で
 | ストリーム接続失敗（リトライ超過） | RuntimeError、exit code 1 |
 | ストリーム切断（リトライ成功） | 自動再接続して続行 |
 | Ctrl+C（ストリームモード） | グレースフルシャットダウン、取得済みフレームを処理 |
-| Claude CLI 未インストール/認証失敗 | CLI: 警告メッセージ, exit code 1 / API: HTTP 503 |
-| Claude CLI 利用不可 + --frames-only | フレーム抽出のみ実行、exit code 0 |
+| GEMINI_API_KEY 未設定 | CLI: 警告メッセージ, exit code 1 / API: HTTP 503 |
+| API キー未設定 + --frames-only | フレーム抽出のみ実行、exit code 0 |
 | 個別フレーム解析失敗 | エラーログ、スコア 1 のフォールバック値で続行 |
 | 非同期ジョブ失敗 | ジョブ status を "failed" に更新、error にメッセージを格納 |
 
@@ -425,7 +422,7 @@ class StreamFrameSource(FrameSource):
 ### 11.2 仕組み
 
 1. 動画から一定間隔（デフォルト30秒）でフレームを抽出し、上半分のみをクロップ
-2. 各フレームに対してタイマー読み取り専用プロンプトで Claude Vision を呼び出し
+2. 各フレームに対してタイマー読み取り専用プロンプトで Gemini Vision を呼び出し
 3. タイマー残り時間（M:SS形式）をパースして秒数に変換
 4. ルール判別: 残り時間 > 3:00 なら5分ルール（300秒）、<= 3:00 なら3分ルール（180秒）
 5. 試合開始時刻を逆算: `frame_timestamp - (total_duration - timer_remaining)`
@@ -456,7 +453,7 @@ class StreamFrameSource(FrameSource):
 |-----------|------|-----------|------|
 | `file_path` | string | (必須) | サーバー上の動画ファイル絶対パス |
 | `interval` | float | 30.0 | フレーム抽出間隔（秒） |
-| `model` | string or null | null | Claude モデル名 |
+| `model` | string or null | null | Gemini モデル名 |
 | `concurrency` | int | 4 | 並行 API 呼び出し数 |
 
 **レスポンス:**
@@ -504,7 +501,7 @@ class StreamFrameSource(FrameSource):
 |------|------|
 | 言語 | Python 3.12 |
 | フレーム抽出 | OpenCV (opencv-python-headless) |
-| 画像解析 | Claude Code CLI (claude コマンド経由で Claude Vision を利用) |
+| 画像解析 | Gemini Vision API (google-genai SDK) |
 | API フレームワーク | FastAPI + uvicorn |
 | 非同期ジョブ | ThreadPoolExecutor + インメモリ JobStore |
 | テスト | pytest + pytest-ruff |
@@ -520,7 +517,7 @@ cd splatoon-battle-analyzer
 
 # 2. 環境変数設定
 cp .env.example .env
-# .env に CLAUDE_MODEL を設定（デフォルト: haiku）
+# .env に GEMINI_API_KEY を設定
 
 # 3. ビルド・起動（API サーバーが localhost:8020 で起動）
 docker compose build
@@ -529,7 +526,7 @@ docker compose up
 # 4. テスト実行
 docker compose run --rm app pytest
 
-# 5. CLI: フレーム抽出のみ（Claude CLI 不要）
+# 5. CLI: フレーム抽出のみ（API キー不要）
 docker compose run --rm app python -m src.cli --input /path/to/video.mp4 --frames-only
 
 # 6. CLI: タイムライン解析
