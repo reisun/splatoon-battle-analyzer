@@ -6,9 +6,13 @@ services:
     volumes:
       - .:/app
       - shared-data:/shared-data
+    user: root
+    environment:
+      - UV_PROJECT_ENVIRONMENT=/opt/venv
     env_file:
       - .env
     working_dir: /app
+    command: ["uv", "run", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     restart: unless-stopped
 
 volumes:
