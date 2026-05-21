@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.battle_analyzer import BattleAnalyzer, _half_resize
-from src.cv_detector import read_timer
 from src.frame_extractor import extract_frames
 from src.highlight_detector import _isotonic_decreasing, _median_smooth
 
@@ -21,27 +20,42 @@ ScanProgressCallback = Callable[[int, int], None]  # (frames_done, frames_total)
 
 logger = logging.getLogger(__name__)
 
-TIMER_SCAN_SYSTEM_PROMPT = """\
-あなたはスプラトゥーンのゲーム画面の上部から試合タイマーを読み取る専門AIです。
-この画像はゲーム画面の上部中央（上15%・中央40%幅）をクロップしたものです。
+SCAN_SYSTEM_PROMPT = """\
+あなたはスプラトゥーンのゲーム画面の上部を分析する専門AIです。
+この画像はゲーム画面の上部30%・中央60%幅をクロップしたものです。
+以下のルールに従ってJSON形式で回答してください。
 
-■ 読み取り対象:
-- 画面上部中央に表示されている試合の残り時間タイマー
-- タイマーは「M:SS」形式（例: 4:52, 2:10, 0:30）で表示されている
-- 試合中でない場合（メニュー画面、リザルト画面等）はタイマーが表示されていない
+■ UI要素の位置:
+- 画面上部中央:
+    試合タイマー（M:SS形式、例: 4:52, 2:10, 0:30）
+- タイマーの左側:
+    自チームの色のイカランプ4つ
+- タイマーの右側:
+    相手チーム色のイカランプ4つ
+- タイマーの下:
+    ゲームカウント。自チームの色と相手チームの色の２つ
+    カウントの上に小さく「のこり」と表示されている
+- ゲームカウント回りの小さな数字:
+    ルールごとに仕様が異なり複雑なため無視する。混同注意。
+- タイマーの下（ゲームカウントの周辺）:
+    ヤグラ・ホコルールでは、ゲームカウントが動くためのレール（横棒）が表示される
+    エリア・ナワバリでは表示されない
 
-■ ルール:
-- タイマーの残り時間の数値のみを読み取ること
-- タイマーが見えない、または不明瞭な場合は null を返すこと
-- タイマー以外の情報は一切不要
+■ 各項目:
+- timer_remaining: 試合タイマーの残り時間。見えない・不明瞭な場合はnull
+- my_team_count / enemy_team_count: (null, 0~100) 自チーム・相手チームのカウント。不明瞭な場合はnull
+- has_count_rail: (true/false) ゲームカウントのレール（横棒）が表示されているか。不明瞭な場合はfalse
 
 ■ 出力フォーマット（JSONのみ、他のテキスト不可）:
 {
-  "timer_remaining": "M:SS" | null
+  "timer_remaining": "M:SS" | null,
+  "my_team_count": number | null,
+  "enemy_team_count": number | null,
+  "has_count_rail": boolean
 }
 """
 
-TIMER_SCAN_USER_PROMPT = "この画像（ゲーム画面の上部中央）から試合タイマーの残り時間を読み取ってJSON形式で回答してください。"
+SCAN_USER_PROMPT = "この画像（ゲーム画面の上部）からタイマーとゲームカウントを読み取ってJSON形式で回答してください。"
 
 # Clustering tolerance in seconds for grouping frames into the same match
 CLUSTER_TOLERANCE = 30.0
@@ -117,11 +131,22 @@ class TimerReading:
 
 
 @dataclass
+class ScanFrameAnalysis:
+    """Per-frame analysis data from combined scan (timer + game counts)."""
+
+    frame_timestamp: float
+    my_team_count: int | None
+    enemy_team_count: int | None
+    has_count_rail: bool
+
+
+@dataclass
 class ScanResult:
-    """Result of a match scan: detected matches and raw readings."""
+    """Result of a match scan: detected matches, raw readings, and frame analyses."""
 
     matches: list[MatchInfo]
     readings: list[TimerReading]
+    frame_analyses: list[ScanFrameAnalysis]
 
 
 def _expand_candidates(readings: list[TimerReading]) -> list[TimerReading]:
@@ -301,7 +326,7 @@ def _normalize_timer_readings(readings: list[TimerReading]) -> list[TimerReading
 class MatchScanner:
     """Scan a video recording to detect individual match boundaries."""
 
-    def __init__(self, analyzer: BattleAnalyzer, interval: float = 20.0) -> None:
+    def __init__(self, analyzer: BattleAnalyzer, interval: float = 30.0) -> None:
         """Initialize the scanner.
 
         Args:
@@ -335,6 +360,7 @@ class MatchScanner:
 
         total_frames = len(frames)
         readings: list[TimerReading | None] = [None] * total_frames
+        frame_analyses: list[ScanFrameAnalysis | None] = [None] * total_frames
         done_count = [0]
 
         def _analyze_one(index: int) -> None:
@@ -343,14 +369,27 @@ class MatchScanner:
 
             frame = _half_resize(frames[index])
             h, w = frame.shape[:2]
-            upper = frame[: int(h * 0.15), :, :]
-            left = int(w * 0.3)
-            right = int(w * 0.7)
-            upper_half = upper[:, left:right, :]
+            upper = frame[: int(h * 0.3), :, :]
+            upper_half = upper[:, int(w * 0.2) : int(w * 0.8), :]
 
-            timer_str = read_timer(upper_half)
-            timer_value = parse_timer(timer_str) if timer_str else None
-            logger.debug("Timer scan at %s: %s -> %s", ts_label, timer_str, timer_value)
+            try:
+                result = self.analyzer._analyze_cropped(
+                    upper_half,
+                    SCAN_USER_PROMPT,
+                    SCAN_SYSTEM_PROMPT,
+                    ts_label,
+                )
+            except Exception:
+                logger.exception("Scan failed for frame at %s", ts_label)
+                result = {}
+
+            if not isinstance(result, dict):
+                result = {}
+
+            timer_value = None
+            raw_timer = result.get("timer_remaining")
+            if raw_timer and isinstance(raw_timer, str):
+                timer_value = parse_timer(raw_timer)
 
             if timer_value is not None:
                 total_duration, duration_type = determine_rule(timer_value)
@@ -363,6 +402,16 @@ class MatchScanner:
                     match_start=match_start,
                 )
 
+            my_count = result.get("my_team_count")
+            enemy_count = result.get("enemy_team_count")
+            has_rail = bool(result.get("has_count_rail", False))
+            frame_analyses[index] = ScanFrameAnalysis(
+                frame_timestamp=timestamp_sec,
+                my_team_count=int(my_count) if my_count is not None else None,
+                enemy_team_count=int(enemy_count) if enemy_count is not None else None,
+                has_count_rail=has_rail,
+            )
+
             done_count[0] += 1
             if progress_callback:
                 progress_callback(done_count[0], total_frames)
@@ -373,16 +422,22 @@ class MatchScanner:
                 future.result()
 
         valid_readings = [r for r in readings if r is not None]
+        valid_analyses = [a for a in frame_analyses if a is not None]
         logger.info(
-            "Timer scan complete: %d/%d frames had valid timer readings",
+            "Scan complete: %d/%d timer readings, %d frame analyses",
             len(valid_readings),
             total_frames,
+            len(valid_analyses),
         )
 
         valid_readings = _normalize_timer_readings(valid_readings)
 
         matches, resolved_readings = cluster_readings(valid_readings)
-        return ScanResult(matches=matches, readings=resolved_readings)
+        return ScanResult(
+            matches=matches,
+            readings=resolved_readings,
+            frame_analyses=valid_analyses,
+        )
 
     @staticmethod
     def _format_timestamp(seconds: float) -> str:

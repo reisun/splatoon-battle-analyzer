@@ -348,21 +348,17 @@ class TestDetectFlow:
     """Tests for the full detect() pipeline."""
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.detect_death", return_value=False)
-    @patch("src.highlight_detector.detect_kills", return_value=1)
     @patch("src.highlight_detector.extract_frames")
-    def test_nawabari_uses_cv_detection(
-        self,
-        mock_extract: MagicMock,
-        mock_kills: MagicMock,
-        mock_death: MagicMock,
-        _mc: MagicMock,
-    ) -> None:
-        """3min (nawabari) uses CV-based kill/death detection."""
+    def test_nawabari_uses_lower_only(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """3min (nawabari) uses lower-only analysis."""
         mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
+        analyzer.analyze_frame_lower_only.return_value = {
+            "kills": 1,
+            "is_dead": False,
+        }
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         segments = detector.detect("/fake/video.mp4", duration_type="3min")
@@ -370,23 +366,13 @@ class TestDetectFlow:
         assert len(segments) >= 1
         assert detector.scan_summary["phase_a_frames"] == 3
         assert detector.scan_summary["phase_b_frames"] == 0
-        assert mock_kills.call_count == 3
-        assert mock_death.call_count == 3
-        analyzer.analyze_frame_lower_only.assert_not_called()
+        analyzer.analyze_frame_lower_only.assert_called()
         analyzer.analyze_frame_upper_only.assert_not_called()
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.detect_death", return_value=False)
-    @patch("src.highlight_detector.detect_kills", return_value=2)
     @patch("src.highlight_detector.extract_frames")
-    def test_ranked_uses_phase_a_and_b(
-        self,
-        mock_extract: MagicMock,
-        mock_kills: MagicMock,
-        mock_death: MagicMock,
-        _mc: MagicMock,
-    ) -> None:
-        """5min (ranked) uses Phase A upper + Phase B CV lower."""
+    def test_ranked_uses_phase_a_and_b(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
+        """5min (ranked) uses Phase A upper + Phase B lower."""
         # Phase A at 15s: 4 frames (0, 15, 30, 45) for 60s video
         # Phase B at 5s: 12 frames (0, 5, 10, ..., 55)
         phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
@@ -411,9 +397,13 @@ class TestDetectFlow:
             }
             return count_map_upper.get(timestamp, default)
 
+        def mock_lower(frame, timestamp):
+            return {"kills": 2, "is_dead": False}
+
         analyzer = MagicMock()
         analyzer.concurrency = 4
         analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4", duration_type="5min")
@@ -422,21 +412,11 @@ class TestDetectFlow:
         assert detector.scan_summary["phase_b_frames"] > 0
         assert detector.scan_summary["total_frames"] == 12
         analyzer.analyze_frame_upper_only.assert_called()
-        analyzer.analyze_frame_lower_only.assert_not_called()
-        assert mock_kills.call_count == 12
-        assert mock_death.call_count == 12
+        analyzer.analyze_frame_lower_only.assert_called()
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.detect_death", return_value=False)
-    @patch("src.highlight_detector.detect_kills", return_value=0)
     @patch("src.highlight_detector.extract_frames")
-    def test_ranked_phase_b_all_frames(
-        self,
-        mock_extract: MagicMock,
-        mock_kills: MagicMock,
-        mock_death: MagicMock,
-        _mc: MagicMock,
-    ) -> None:
+    def test_ranked_phase_b_all_frames(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """Phase B always analyzes all frames regardless of score_count_gain."""
         phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
         phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
@@ -449,30 +429,27 @@ class TestDetectFlow:
         analyzer = MagicMock()
         analyzer.concurrency = 4
         analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.return_value = {"kills": 0, "is_dead": False}
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4", duration_type="5min")
 
         assert detector.scan_summary["phase_b_frames"] == 12
-        assert mock_kills.call_count == 12
+        assert analyzer.analyze_frame_lower_only.call_count == 12
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.detect_death", return_value=False)
-    @patch("src.highlight_detector.detect_kills", return_value=1)
     @patch("src.highlight_detector.extract_frames")
-    def test_progress_callback_nawabari(
-        self,
-        mock_extract: MagicMock,
-        _mock_kills: MagicMock,
-        _mock_death: MagicMock,
-        _mc: MagicMock,
-    ) -> None:
+    def test_progress_callback_nawabari(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """Progress callback is invoked for nawabari (phase=1 only)."""
         frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
         mock_extract.return_value = frames
 
         analyzer = MagicMock()
         analyzer.concurrency = 1
+        analyzer.analyze_frame_lower_only.return_value = {
+            "kills": 1,
+            "is_dead": False,
+        }
 
         progress_calls: list[tuple[int, int, int]] = []
 
@@ -487,16 +464,8 @@ class TestDetectFlow:
         assert all(c[2] == 3 for c in progress_calls)
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.detect_death", return_value=False)
-    @patch("src.highlight_detector.detect_kills", return_value=1)
     @patch("src.highlight_detector.extract_frames")
-    def test_progress_callback_ranked(
-        self,
-        mock_extract: MagicMock,
-        _mock_kills: MagicMock,
-        _mock_death: MagicMock,
-        _mc: MagicMock,
-    ) -> None:
+    def test_progress_callback_ranked(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """Progress callback has phase=1 for A and phase=2 for B."""
         phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
         phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
@@ -518,9 +487,13 @@ class TestDetectFlow:
             }
             return count_map.get(timestamp, default)
 
+        def mock_lower(frame, timestamp):
+            return {"kills": 1, "is_dead": False}
+
         analyzer = MagicMock()
         analyzer.concurrency = 1
         analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
 
         progress_calls: list[tuple[int, int, int]] = []
 
@@ -538,21 +511,19 @@ class TestDetectFlow:
             assert all(c[0] == 2 for c in phase2_calls)
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.detect_death", return_value=False)
-    @patch("src.highlight_detector.detect_kills", return_value=1)
     @patch("src.highlight_detector.extract_frames")
-    def test_enemy_score_gain_in_all_frames(
-        self,
-        mock_extract: MagicMock,
-        _mock_kills: MagicMock,
-        _mock_death: MagicMock,
-        _mc: MagicMock,
-    ) -> None:
+    def test_enemy_score_gain_in_all_frames(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """enemy_score_gain appears in all_frames output."""
         mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
+        analyzer.analyze_frame_lower_only.return_value = {
+            "kills": 1,
+            "is_dead": False,
+            "my_team_count": None,
+            "enemy_team_count": None,
+        }
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4", duration_type="3min")
@@ -865,16 +836,8 @@ class TestCountRailSwap:
     """Tests for count rail detection and my/enemy count swapping."""
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.detect_death", return_value=False)
-    @patch("src.highlight_detector.detect_kills", return_value=1)
     @patch("src.highlight_detector.extract_frames")
-    def test_rail_majority_triggers_swap(
-        self,
-        mock_extract: MagicMock,
-        _mock_kills: MagicMock,
-        _mock_death: MagicMock,
-        _mc: MagicMock,
-    ) -> None:
+    def test_rail_majority_triggers_swap(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """When has_count_rail=True is majority, counts are swapped."""
         phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
         phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
@@ -894,9 +857,13 @@ class TestCountRailSwap:
             call_count[0] += 1
             return upper_results[min(idx, len(upper_results) - 1)]
 
+        def mock_lower(frame, timestamp):
+            return {"kills": 1, "is_dead": False}
+
         analyzer = MagicMock()
         analyzer.concurrency = 4
         analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4", duration_type="5min")
@@ -904,16 +871,8 @@ class TestCountRailSwap:
         assert detector.scan_summary["count_swapped"] is True
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.detect_death", return_value=False)
-    @patch("src.highlight_detector.detect_kills", return_value=1)
     @patch("src.highlight_detector.extract_frames")
-    def test_rail_minority_no_swap(
-        self,
-        mock_extract: MagicMock,
-        _mock_kills: MagicMock,
-        _mock_death: MagicMock,
-        _mc: MagicMock,
-    ) -> None:
+    def test_rail_minority_no_swap(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """When has_count_rail=True is minority, no swap occurs."""
         phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
         phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
@@ -933,9 +892,13 @@ class TestCountRailSwap:
             call_count[0] += 1
             return upper_results[min(idx, len(upper_results) - 1)]
 
+        def mock_lower(frame, timestamp):
+            return {"kills": 1, "is_dead": False}
+
         analyzer = MagicMock()
         analyzer.concurrency = 4
         analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4", duration_type="5min")
@@ -943,21 +906,14 @@ class TestCountRailSwap:
         assert detector.scan_summary["count_swapped"] is False
 
     @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
-    @patch("src.highlight_detector.detect_death", return_value=False)
-    @patch("src.highlight_detector.detect_kills", return_value=1)
     @patch("src.highlight_detector.extract_frames")
-    def test_nawabari_count_swapped_false(
-        self,
-        mock_extract: MagicMock,
-        _mock_kills: MagicMock,
-        _mock_death: MagicMock,
-        _mc: MagicMock,
-    ) -> None:
+    def test_nawabari_count_swapped_false(self, mock_extract: MagicMock, _mc: MagicMock) -> None:
         """Nawabari mode always has count_swapped=False."""
         mock_extract.return_value = [np.zeros((100, 100, 3), dtype=np.uint8)] * 3
 
         analyzer = MagicMock()
         analyzer.concurrency = 4
+        analyzer.analyze_frame_lower_only.return_value = {"kills": 1, "is_dead": False}
 
         detector = HighlightDetector(analyzer=analyzer, interval=5)
         detector.detect("/fake/video.mp4", duration_type="3min")
