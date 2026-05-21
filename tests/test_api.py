@@ -34,7 +34,7 @@ class TestAnalyzeHighlightsEndpoint:
 
     @patch("src.api.check_api_key_available", return_value=False)
     def test_cli_unavailable(self, mock_check: MagicMock, tmp_path: pytest.TempPathFactory) -> None:
-        """Return 503 when Claude CLI is unavailable."""
+        """Return 503 when API key is not configured."""
         video = tmp_path / "test.mp4"
         video.write_bytes(b"fake")
         response = client.post(
@@ -113,7 +113,7 @@ class TestCreateHighlightJob:
 
     @patch("src.api.check_api_key_available", return_value=False)
     def test_cli_unavailable(self, mock_check: MagicMock, tmp_path: pytest.TempPathFactory) -> None:
-        """Return 503 when Claude CLI is unavailable."""
+        """Return 503 when API key is not configured."""
         video = tmp_path / "test.mp4"
         video.write_bytes(b"fake")
         response = client.post(
@@ -233,7 +233,7 @@ class TestCreateMatchScanJob:
 
     @patch("src.api.check_api_key_available", return_value=False)
     def test_cli_unavailable(self, mock_check: MagicMock, tmp_path: pytest.TempPathFactory) -> None:
-        """Return 503 when Claude CLI is unavailable."""
+        """Return 503 when API key is not configured."""
         video = tmp_path / "test.mp4"
         video.write_bytes(b"fake")
         response = client.post(
