@@ -8,19 +8,10 @@ services:
       - shared-data:/shared-data
     env_file:
       - .env
-    environment:
-      - AGENT_GATEWAY_URL=http://llm-internal-proxy/agent
     working_dir: /app
     restart: unless-stopped
-    networks:
-      - default
-      - llm-network
 
 volumes:
   shared-data:
-    name: shared-data
-
-networks:
-  llm-network:
     external: true
-    name: llm-network
+    name: shared-data

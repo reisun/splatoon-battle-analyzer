@@ -98,7 +98,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--model",
         type=str,
         default=None,
-        help="Claude model name (default: env CLAUDE_MODEL or haiku)",
+        help="Gemini model name (default: env GEMINI_MODEL or gemini-2.5-flash-lite)",
     )
     parser.add_argument(
         "--output-format",
@@ -300,10 +300,10 @@ def run(argv: list[str] | None = None) -> int:
         return 0
 
     if not check_api_key_available():
-        logger.warning("Agent Gateway is not available. Use --frames-only or check connectivity.")
+        logger.warning("GEMINI_API_KEY is not set. Use --frames-only or set the environment variable.")
         if not args.no_save:
             print(f"\nExtracted {len(frame_paths)} frames to {output_dir}")
-        print("Ensure Agent Gateway is reachable.")
+        print("Set GEMINI_API_KEY environment variable.")
         return 1
 
     # Step 3: Analyze and output timeline
@@ -337,7 +337,7 @@ def run(argv: list[str] | None = None) -> int:
 def _run_highlight_mode(args: argparse.Namespace) -> int:
     """Run highlight detection pipeline."""
     if not check_api_key_available():
-        logger.error("Agent Gateway is not available.")
+        logger.error("GEMINI_API_KEY is not set.")
         return 1
 
     analyzer = BattleAnalyzer(concurrency=args.concurrency, model=args.model)

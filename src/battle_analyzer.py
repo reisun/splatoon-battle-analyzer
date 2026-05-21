@@ -1,6 +1,6 @@
-"""Battle analysis module using Agent Gateway HTTP API.
+"""Battle analysis module using Gemini Vision API.
 
-Sends frame images to Claude Vision via Agent Gateway and extracts battle status.
+Sends frame images to Gemini 2.5 Flash-Lite and extracts battle status.
 Supports concurrent calls for improved throughput.
 """
 
@@ -8,24 +8,17 @@ import json
 import logging
 import os
 import re
-import tempfile
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
 import numpy as np
-import requests
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "haiku"
-DEFAULT_AGENT_GATEWAY_URL = "http://llm-internal-proxy/agent"
-POLL_INTERVAL = 2.0
-MAX_POLL_ATTEMPTS = 900
-
-
-SHARED_TEMP_DIR = os.environ.get("SHARED_TEMP_DIR", "/shared-data/tmp")
+DEFAULT_MODEL = "gemini-2.5-flash-lite"
 
 
 def _half_resize(frame: np.ndarray) -> np.ndarray:
@@ -34,13 +27,12 @@ def _half_resize(frame: np.ndarray) -> np.ndarray:
     return cv2.resize(frame, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
 
 
-def _save_temp_frame(frame: np.ndarray) -> str:
-    """Save frame to a shared temporary JPEG file accessible by Agent Gateway."""
-    os.makedirs(SHARED_TEMP_DIR, exist_ok=True)
-    fd, path = tempfile.mkstemp(suffix=".jpg", dir=SHARED_TEMP_DIR)
-    os.close(fd)
-    cv2.imwrite(path, frame)
-    return path
+def _encode_frame_jpeg(frame: np.ndarray) -> bytes:
+    """Encode a numpy frame to JPEG bytes."""
+    ok, buf = cv2.imencode(".jpg", frame)
+    if not ok:
+        raise RuntimeError("Failed to encode frame to JPEG")
+    return buf.tobytes()
 
 
 UPPER_HALF_SYSTEM_PROMPT = """\
@@ -126,44 +118,34 @@ def parse_llm_response(text: str) -> dict | str:
         return text
 
 
-def _get_gateway_url() -> str:
-    """Get Agent Gateway base URL from environment."""
-    return os.environ.get("AGENT_GATEWAY_URL", DEFAULT_AGENT_GATEWAY_URL)
+def _create_client() -> genai.Client:
+    """Create a Gemini API client."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
+    return genai.Client(api_key=api_key)
 
 
 class BattleAnalyzer:
-    """Analyzes Splatoon battle frames using Agent Gateway HTTP API."""
+    """Analyzes Splatoon battle frames using Gemini Vision API."""
 
     def __init__(self, model: str | None = None, concurrency: int = 4, timeout: int = 120) -> None:
-        """Initialize the analyzer.
-
-        Args:
-            model: Claude model name (default: env CLAUDE_MODEL or "haiku").
-            concurrency: Maximum number of concurrent API calls.
-            timeout: Timeout in seconds for each API call.
-        """
         if model:
             self.model = model
         else:
-            self.model = os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
+            self.model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
         self.concurrency = concurrency
         self.timeout = timeout
-        self.gateway_url = _get_gateway_url()
+        self.client = _create_client()
 
-    def _call_agent_gateway(
+    def _call_gemini(
         self,
         prompt: str,
-        image_path: str | None = None,
+        image_bytes: bytes | None = None,
         system_prompt: str | None = None,
-        image_paths: list[str] | None = None,
+        image_bytes_list: list[bytes] | None = None,
     ) -> str:
-        """Call Agent Gateway API with image file(s).
-
-        Args:
-            prompt: Text prompt to send.
-            image_path: Path to a single image file for analysis.
-            system_prompt: Optional system prompt for the model.
-            image_paths: Paths to multiple image files for analysis.
+        """Call Gemini API with image data.
 
         Returns:
             Response text from the model.
@@ -171,73 +153,33 @@ class BattleAnalyzer:
         Raises:
             RuntimeError: If the API call fails.
         """
-        run_url = f"{self.gateway_url}/run"
-        payload: dict = {
-            "agent": "claude",
-            "prompt": prompt,
-            "model": self.model,
-            "timeout": self.timeout,
-            "agent_options": {"allowed_tools": ["Read"]},
-        }
-        if image_paths:
-            payload["image_paths"] = image_paths
-        elif image_path:
-            payload["image_path"] = image_path
+        contents: list = []
+
+        if image_bytes_list:
+            for img_data in image_bytes_list:
+                contents.append(types.Part.from_bytes(data=img_data, mime_type="image/jpeg"))
+        elif image_bytes:
+            contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
+
+        contents.append(prompt)
+
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            http_options=types.HttpOptions(timeout=self.timeout * 1000),
+        )
         if system_prompt:
-            payload["system_prompt"] = system_prompt
+            config.system_instruction = system_prompt
 
         try:
-            response = requests.post(run_url, json=payload, timeout=30)
-        except requests.RequestException as e:
-            raise RuntimeError(f"Agent Gateway request failed: {e}")
-
-        if response.status_code != 202:
-            raise RuntimeError(
-                f"Agent Gateway returned status {response.status_code}: {response.text}"
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=config,
             )
+        except Exception as e:
+            raise RuntimeError(f"Gemini API call failed: {e}")
 
-        job_data = response.json()
-        job_id = job_data["job_id"]
-
-        return self._poll_job(job_id)
-
-    def _poll_job(self, job_id: str) -> str:
-        """Poll Agent Gateway for job completion.
-
-        Args:
-            job_id: The job ID to poll.
-
-        Returns:
-            Result text from the completed job.
-
-        Raises:
-            RuntimeError: If the job fails or times out.
-        """
-        status_url = f"{self.gateway_url}/jobs/{job_id}"
-
-        for _ in range(MAX_POLL_ATTEMPTS):
-            time.sleep(POLL_INTERVAL)
-
-            try:
-                response = requests.get(status_url, timeout=10)
-            except requests.RequestException as e:
-                raise RuntimeError(f"Agent Gateway poll failed: {e}")
-
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Agent Gateway status check returned {response.status_code}: {response.text}"
-                )
-
-            data = response.json()
-            status = data["status"]
-
-            if status == "done":
-                return data["result"]
-            elif status == "failed":
-                error_msg = data.get("error", "Unknown error")
-                raise RuntimeError(f"Agent Gateway job failed: {error_msg}")
-
-        raise RuntimeError("Agent Gateway job timed out waiting for completion")
+        return response.text or ""
 
     def analyze_frame(self, image_path: str | Path) -> dict | str:
         """Analyze a single frame image.
@@ -256,9 +198,13 @@ class BattleAnalyzer:
             raise FileNotFoundError(f"Image file not found: {image_path}")
 
         logger.info("Analyzing frame: %s", image_path.name)
-        result = self._call_agent_gateway(
+        frame = cv2.imread(str(image_path))
+        if frame is None:
+            raise RuntimeError(f"Failed to read image: {image_path}")
+        image_bytes = _encode_frame_jpeg(frame)
+        result = self._call_gemini(
             FULL_FRAME_USER_PROMPT,
-            str(image_path.resolve()),
+            image_bytes,
             system_prompt=FRAME_ANALYSIS_SYSTEM_PROMPT,
         )
         logger.info("Analysis complete for: %s", image_path.name)
@@ -274,18 +220,15 @@ class BattleAnalyzer:
         Returns:
             Parsed analysis dict or raw string if parsing fails.
         """
-        tmp_path = _save_temp_frame(frame)
-        try:
-            logger.info("Analyzing frame at %s", timestamp)
-            result = self._call_agent_gateway(
-                FULL_FRAME_USER_PROMPT,
-                tmp_path,
-                system_prompt=FRAME_ANALYSIS_SYSTEM_PROMPT,
-            )
-            logger.info("Analysis complete for frame at %s", timestamp)
-            return parse_llm_response(result)
-        finally:
-            os.unlink(tmp_path)
+        image_bytes = _encode_frame_jpeg(frame)
+        logger.info("Analyzing frame at %s", timestamp)
+        result = self._call_gemini(
+            FULL_FRAME_USER_PROMPT,
+            image_bytes,
+            system_prompt=FRAME_ANALYSIS_SYSTEM_PROMPT,
+        )
+        logger.info("Analysis complete for frame at %s", timestamp)
+        return parse_llm_response(result)
 
     def _analyze_cropped(
         self,
@@ -295,12 +238,9 @@ class BattleAnalyzer:
         timestamp: str,
     ) -> dict | str:
         """Analyze a cropped frame region."""
-        tmp_path = _save_temp_frame(frame)
-        try:
-            result = self._call_agent_gateway(user_prompt, tmp_path, system_prompt=system_prompt)
-            return parse_llm_response(result)
-        finally:
-            os.unlink(tmp_path)
+        image_bytes = _encode_frame_jpeg(frame)
+        result = self._call_gemini(user_prompt, image_bytes, system_prompt=system_prompt)
+        return parse_llm_response(result)
 
     def _analyze_cropped_multi(
         self,
@@ -310,15 +250,11 @@ class BattleAnalyzer:
         timestamp: str,
     ) -> dict | str:
         """Analyze multiple cropped frame regions in a single request."""
-        tmp_paths = [_save_temp_frame(f) for f in frames]
-        try:
-            result = self._call_agent_gateway(
-                user_prompt, system_prompt=system_prompt, image_paths=tmp_paths
-            )
-            return parse_llm_response(result)
-        finally:
-            for p in tmp_paths:
-                os.unlink(p)
+        image_bytes_list = [_encode_frame_jpeg(f) for f in frames]
+        result = self._call_gemini(
+            user_prompt, system_prompt=system_prompt, image_bytes_list=image_bytes_list
+        )
+        return parse_llm_response(result)
 
     @staticmethod
     def _merge_results(upper: dict | str, lower: dict | str) -> dict:
@@ -413,16 +349,13 @@ class BattleAnalyzer:
         Returns:
             Parsed analysis dict or raw string if parsing fails.
         """
-        tmp_path = _save_temp_frame(frame)
-        try:
-            logger.info("Analyzing frame at %s with custom prompt", timestamp)
-            result = self._call_agent_gateway(
-                prompt, tmp_path, system_prompt=FRAME_ANALYSIS_SYSTEM_PROMPT
-            )
-            logger.info("Analysis complete for frame at %s", timestamp)
-            return parse_llm_response(result)
-        finally:
-            os.unlink(tmp_path)
+        image_bytes = _encode_frame_jpeg(frame)
+        logger.info("Analyzing frame at %s with custom prompt", timestamp)
+        result = self._call_gemini(
+            prompt, image_bytes, system_prompt=FRAME_ANALYSIS_SYSTEM_PROMPT
+        )
+        logger.info("Analysis complete for frame at %s", timestamp)
+        return parse_llm_response(result)
 
     def analyze_frames(self, image_paths: list[Path]) -> list[dict[str, str]]:
         """Analyze multiple frame images concurrently.
@@ -458,16 +391,9 @@ class BattleAnalyzer:
 
 
 def check_api_key_available() -> bool:
-    """Check if Agent Gateway is available.
+    """Check if Gemini API key is configured.
 
     Returns:
-        True if Agent Gateway is reachable, False otherwise.
+        True if GEMINI_API_KEY is set, False otherwise.
     """
-    gateway_url = _get_gateway_url()
-    health_url = gateway_url.rsplit("/agent", 1)[0] + "/health"
-
-    try:
-        response = requests.get(health_url, timeout=5)
-        return response.status_code == 200
-    except requests.RequestException:
-        return False
+    return bool(os.environ.get("GEMINI_API_KEY"))

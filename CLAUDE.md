@@ -1,6 +1,6 @@
 # Splatoon Battle Analyzer
 
-スプラトゥーンのプレイ動画からフレームを抽出し、Claude Vision（Claude Code CLI 経由）で戦況を解析する Python アプリ。CLI とFastAPI API の2つのインターフェースを持つ。
+スプラトゥーンのプレイ動画からフレームを抽出し、Gemini Vision API で戦況を解析する Python アプリ。CLI とFastAPI API の2つのインターフェースを持つ。
 
 ## プロジェクト構成
 
@@ -31,7 +31,7 @@ docker compose run --rm app pytest
 
 ## 環境変数
 
-`.env.example` をコピーして `.env` を作成し、`ANTHROPIC_API_KEY` を設定する。
+`.env.example` をコピーして `.env` を作成し、`GEMINI_API_KEY` を設定する。
 
 ```bash
 cp .env.example .env
