@@ -11,8 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-from src.battle_analyzer import BattleAnalyzer, _half_resize
-from src.cv_detector import detect_death, detect_kills
+from src.battle_analyzer import BattleAnalyzer
 from src.frame_extractor import extract_frames
 from src.scoring_config import ScoringConfig, load_scoring_config
 
@@ -274,24 +273,24 @@ class HighlightDetector:
         done_count = [0]
         results: list[tuple[float, dict | str]] = []
 
-        for i in range(total):
-            ts = scan_start + i * self.interval
+        def _analyze(index: int) -> tuple[float, dict]:
+            ts = scan_start + index * self.interval
+            label = self._format_timestamp(ts)
             try:
-                frame_half = _half_resize(frames[i])
-                h = frame_half.shape[0]
-                lower = frame_half[int(h * 0.7) :, :, :]
-                result: dict = {
-                    "kills": detect_kills(lower),
-                    "is_dead": detect_death(lower),
-                }
+                result = self.analyzer.analyze_frame_lower_only(frames[index], label)
             except Exception:
-                label = self._format_timestamp(ts)
                 logger.exception("Analysis failed for frame at %s", label)
                 result = {"kills": 0}
-            results.append((ts, result))
-            done_count[0] += 1
-            if progress_callback:
-                progress_callback(1, done_count[0], total)
+            return ts, result
+
+        with ThreadPoolExecutor(max_workers=self.analyzer.concurrency) as executor:
+            futures = {executor.submit(_analyze, i): i for i in range(total)}
+            for future in as_completed(futures):
+                ts, result = future.result()
+                results.append((ts, result))
+                done_count[0] += 1
+                if progress_callback:
+                    progress_callback(1, done_count[0], total)
 
         self.scan_summary = {
             "phase_a_frames": total,
@@ -435,24 +434,24 @@ class HighlightDetector:
         done_count[0] = 0
         phase_b_results: dict[float, dict] = {}
 
-        for index in phase_b_indices:
+        def _analyze_lower(index: int) -> None:
             ts = b_timestamps[index]
+            label = self._format_timestamp(ts)
             try:
-                frame_half = _half_resize(frames_b[index])
-                h = frame_half.shape[0]
-                lower = frame_half[int(h * 0.7) :, :, :]
-                result: dict = {
-                    "kills": detect_kills(lower),
-                    "is_dead": detect_death(lower),
-                }
+                result = self.analyzer.analyze_frame_lower_only(frames_b[index], label)
             except Exception:
-                label = self._format_timestamp(ts)
                 logger.exception("Phase B failed for frame at %s", label)
                 result = {"kills": 0, "is_dead": False}
             phase_b_results[ts] = result
             done_count[0] += 1
             if progress_callback:
                 progress_callback(2, done_count[0], phase_b_total)
+
+        if phase_b_indices:
+            with ThreadPoolExecutor(max_workers=self.analyzer.concurrency) as executor:
+                futures = [executor.submit(_analyze_lower, i) for i in phase_b_indices]
+                for future in as_completed(futures):
+                    future.result()
 
         # --- Merge Phase A + Phase B ---
         # Build Phase A lookup
