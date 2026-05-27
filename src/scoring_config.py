@@ -21,6 +21,20 @@ class ScoringConfig:
     score_count_gain_window_seconds: int = 30
 
 
+def override_weights(cfg: ScoringConfig, overrides: dict[str, float]) -> ScoringConfig:
+    """リクエストの weights でデフォルト設定をオーバーライドした新しい ScoringConfig を返す."""
+    if not overrides:
+        return cfg
+    return ScoringConfig(
+        weights=ScoringWeights(
+            kills=overrides.get("kills", cfg.weights.kills),
+            score_count_gain=overrides.get("score_count_gain", cfg.weights.score_count_gain),
+        ),
+        death_penalty=overrides.get("death_penalty", cfg.death_penalty),
+        score_count_gain_window_seconds=cfg.score_count_gain_window_seconds,
+    )
+
+
 def load_scoring_config(path: Path | None = None) -> ScoringConfig:
     config_path = path or _DEFAULT_CONFIG_PATH
     if not config_path.exists():

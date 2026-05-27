@@ -919,3 +919,83 @@ class TestCountRailSwap:
         detector.detect("/fake/video.mp4", duration_type="3min")
 
         assert detector.scan_summary["count_swapped"] is False
+
+
+class TestWeightOverrides:
+    """Tests for weight_overrides parameter."""
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    def test_weight_overrides_applied_to_scoring(self, _mc: MagicMock) -> None:
+        """weight_overrides={"score_count_gain": 0} makes score_count_gain always 1.0."""
+        analyzer = MagicMock()
+        detector = HighlightDetector(
+            analyzer=analyzer, interval=5, weight_overrides={"score_count_gain": 0}
+        )
+        results = [
+            (0.0, {"kills": 4, "my_team_count": 100}),
+            (5.0, {"kills": 4, "my_team_count": 80}),
+            (10.0, {"kills": 4, "my_team_count": 60}),
+            (15.0, {"kills": 4, "my_team_count": 40}),
+            (20.0, {"kills": 4, "my_team_count": 20}),
+        ]
+        scored = detector._score_frames(results)
+        for sf in scored:
+            assert sf.breakdown.score_count_gain == 1.0
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    def test_no_overrides_uses_default(self, _mc: MagicMock) -> None:
+        """Without overrides, default weights are used."""
+        analyzer = MagicMock()
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        results = [
+            (0.0, {"kills": 4, "my_team_count": 100}),
+            (5.0, {"kills": 4, "my_team_count": 80}),
+            (10.0, {"kills": 4, "my_team_count": 60}),
+            (15.0, {"kills": 4, "my_team_count": 40}),
+            (20.0, {"kills": 4, "my_team_count": 20}),
+        ]
+        scored = detector._score_frames(results)
+        has_gain = any(sf.breakdown.score_count_gain > 1.0 for sf in scored)
+        assert has_gain
+
+
+class TestPhaseBMergePreservesCount:
+    """Tests that Phase B merge does not overwrite Phase A game counts."""
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    @patch("src.highlight_detector.extract_frames")
+    def test_phase_a_counts_preserved_after_phase_b_merge(
+        self, mock_extract: MagicMock, _mc: MagicMock
+    ) -> None:
+        """Phase B lower-only results must not overwrite Phase A game counts."""
+        phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
+        phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
+        mock_extract.side_effect = [phase_a_frames, phase_b_frames]
+
+        count_map_upper = {
+            "00m00s": {"my_team_count": 100, "enemy_team_count": 90},
+            "00m15s": {"my_team_count": 80, "enemy_team_count": 70},
+            "00m30s": {"my_team_count": 60, "enemy_team_count": 50},
+            "00m45s": {"my_team_count": 40, "enemy_team_count": 30},
+        }
+
+        def mock_upper(frame, timestamp):
+            return count_map_upper.get(timestamp, {"my_team_count": None, "enemy_team_count": None})
+
+        def mock_lower(frame, timestamp):
+            return {"kills": 1, "is_dead": False, "my_team_count": None, "enemy_team_count": None}
+
+        analyzer = MagicMock()
+        analyzer.concurrency = 4
+        analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
+
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        detector.detect("/fake/video.mp4", duration_type="5min")
+
+        frames_on_15s = [f for f in detector.all_frames if f.timestamp_seconds % 15 == 0]
+        for f in frames_on_15s:
+            assert f.my_team_count is not None, f"my_team_count null at {f.timestamp_seconds}s"
+            assert f.enemy_team_count is not None, (
+                f"enemy_team_count null at {f.timestamp_seconds}s"
+            )

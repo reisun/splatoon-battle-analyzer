@@ -17,7 +17,7 @@ from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.highlight_detector import FrameAnalysis, HighlightDetector
 from src.job_store import JobStatus, JobStore
 from src.match_scanner import MatchInfo, MatchScanner, ScanFrameAnalysis, ScanResult
-from src.scoring_config import load_scoring_config
+from src.scoring_config import load_scoring_config, override_weights
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ class HighlightRequest(BaseModel):
     concurrency: int = Field(default=4, description="Concurrent API calls")
     duration_type: str | None = Field(default=None, description="Match rule type (5min/3min)")
     scan_job_id: str | None = Field(default=None, description="Scan job ID to reuse frame analyses")
+    weights: dict[str, float] | None = Field(default=None, description="Score weight overrides")
 
 
 class SegmentResult(BaseModel):
@@ -116,8 +117,10 @@ class HealthResponse(BaseModel):
     status: str = "ok"
 
 
-def _build_scoring_info() -> ScoringInfo:
+def _build_scoring_info(weight_overrides: dict[str, float] | None = None) -> ScoringInfo:
     cfg = load_scoring_config()
+    if weight_overrides:
+        cfg = override_weights(cfg, weight_overrides)
     return ScoringInfo(
         weights={"kills": cfg.weights.kills, "score_count_gain": cfg.weights.score_count_gain},
         death_penalty=cfg.death_penalty,
@@ -243,6 +246,7 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
         detector = HighlightDetector(
             analyzer=analyzer,
             interval=request.interval,
+            weight_overrides=request.weights,
         )
 
         def on_progress(phase: int, frames_done: int, frames_total: int) -> None:
@@ -268,7 +272,7 @@ def _run_job(job_id: str, request: HighlightRequest) -> None:
                 )
                 for h in highlights
             ],
-            scoring=_build_scoring_info(),
+            scoring=_build_scoring_info(request.weights),
             frames=_to_frame_results(detector.all_frames),
             scan_summary=detector.scan_summary,
         )

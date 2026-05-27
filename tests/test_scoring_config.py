@@ -3,7 +3,7 @@
 from pathlib import Path
 from textwrap import dedent
 
-from src.scoring_config import ScoringConfig, ScoringWeights, load_scoring_config
+from src.scoring_config import ScoringConfig, ScoringWeights, load_scoring_config, override_weights
 
 
 class TestLoadScoringConfig:
@@ -56,3 +56,30 @@ class TestScoringDefaults:
         cfg = ScoringConfig()
         assert cfg.death_penalty == 0.5
         assert cfg.score_count_gain_window_seconds == 30
+
+
+class TestOverrideWeights:
+    """Tests for override_weights."""
+
+    def test_override_score_count_gain_to_zero(self) -> None:
+        cfg = ScoringConfig()
+        overridden = override_weights(cfg, {"score_count_gain": 0})
+        assert overridden.weights.score_count_gain == 0
+        assert overridden.weights.kills == 1.0
+        assert overridden.death_penalty == 0.5
+
+    def test_override_kills(self) -> None:
+        cfg = ScoringConfig()
+        overridden = override_weights(cfg, {"kills": 5.0})
+        assert overridden.weights.kills == 5.0
+        assert overridden.weights.score_count_gain == 1.0
+
+    def test_empty_overrides_returns_same(self) -> None:
+        cfg = ScoringConfig()
+        result = override_weights(cfg, {})
+        assert result is cfg
+
+    def test_none_overrides_returns_same(self) -> None:
+        cfg = ScoringConfig()
+        result = override_weights(cfg, {})
+        assert result is cfg
