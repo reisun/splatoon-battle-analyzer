@@ -13,7 +13,7 @@ from pathlib import Path
 
 from src.battle_analyzer import BattleAnalyzer
 from src.frame_extractor import extract_frames
-from src.scoring_config import ScoringConfig, load_scoring_config
+from src.scoring_config import ScoringConfig, load_scoring_config, override_weights
 
 ProgressCallback = Callable[[int, int, int], None]  # (phase, frames_done, frames_total)
 
@@ -221,9 +221,11 @@ class HighlightDetector:
         self,
         analyzer: BattleAnalyzer,
         interval: float = 5,
+        weight_overrides: dict[str, float] | None = None,
     ) -> None:
         self.analyzer = analyzer
         self.interval = interval
+        self.weight_overrides = weight_overrides
         self.scan_summary: dict = {}
         self.all_frames: list[FrameAnalysis] = []
 
@@ -471,10 +473,14 @@ class HighlightDetector:
                 merged.update({"my_team_count": None, "enemy_team_count": None})
 
             # Lower data: from Phase B if analyzed, otherwise defaults
+            # Phase A のゲームカウント値を上書きしないよう、lower 専用フィールドのみマージ
+            _LOWER_FIELDS = {"kills", "is_dead"}
             if ts in phase_b_results:
                 lower = phase_b_results[ts]
                 if isinstance(lower, dict):
-                    merged.update(lower)
+                    for k, v in lower.items():
+                        if k in _LOWER_FIELDS:
+                            merged[k] = v
                 else:
                     merged.update({"kills": 0, "is_dead": False})
             else:
@@ -525,6 +531,8 @@ class HighlightDetector:
 
     def _score_frames(self, results: list[tuple[float, dict | str]]) -> list[_ScoredFrame]:
         cfg = load_scoring_config()
+        if self.weight_overrides:
+            cfg = override_weights(cfg, self.weight_overrides)
         sorted_results = sorted(results, key=lambda x: x[0])
         _normalize_counts(sorted_results)
         window_size = max(1, int(cfg.score_count_gain_window_seconds / self.interval))
