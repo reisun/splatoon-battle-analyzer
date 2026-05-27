@@ -999,3 +999,41 @@ class TestPhaseBMergePreservesCount:
             assert f.enemy_team_count is not None, (
                 f"enemy_team_count null at {f.timestamp_seconds}s"
             )
+
+    @patch("src.highlight_detector.load_scoring_config", return_value=_DEFAULT_CFG)
+    @patch("src.highlight_detector.extract_frames")
+    def test_phase_a_counts_with_snapped_scan_start(
+        self, mock_extract: MagicMock, _mc: MagicMock
+    ) -> None:
+        """Phase A counts preserved when scan_start snaps to 30s grid."""
+        phase_a_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 4
+        phase_b_frames = [np.zeros((100, 100, 3), dtype=np.uint8)] * 12
+        mock_extract.side_effect = [phase_a_frames, phase_b_frames]
+
+        pre_analyzed = {
+            30.0: {"my_team_count": 100, "enemy_team_count": 90, "has_count_rail": False},
+            60.0: {"my_team_count": 80, "enemy_team_count": 70, "has_count_rail": False},
+        }
+
+        def mock_upper(frame, timestamp):
+            return {"my_team_count": 50, "enemy_team_count": 40}
+
+        def mock_lower(frame, timestamp):
+            return {"kills": 0, "is_dead": False}
+
+        analyzer = MagicMock()
+        analyzer.concurrency = 4
+        analyzer.analyze_frame_upper_only.side_effect = mock_upper
+        analyzer.analyze_frame_lower_only.side_effect = mock_lower
+
+        detector = HighlightDetector(analyzer=analyzer, interval=5)
+        detector.detect(
+            "/fake/video.mp4",
+            start_seconds=9.0,
+            end_seconds=69.0,
+            duration_type="5min",
+            pre_analyzed=pre_analyzed,
+        )
+
+        has_count = any(f.my_team_count is not None for f in detector.all_frames)
+        assert has_count, "All my_team_count values are null after snapped merge"

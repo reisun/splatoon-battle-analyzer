@@ -456,16 +456,18 @@ class HighlightDetector:
                     future.result()
 
         # --- Merge Phase A + Phase B ---
-        # Build Phase A lookup
+        # Build Phase A lookup keyed by nearest Phase B timestamp
         phase_a_data: dict[float, dict] = {}
+        half_interval = self.interval / 2.0
         for sf in scored_a:
-            phase_a_data[sf.timestamp] = sf.raw
+            best_ts = min(b_timestamps, key=lambda t: abs(t - sf.timestamp))
+            if abs(best_ts - sf.timestamp) <= half_interval:
+                phase_a_data[best_ts] = sf.raw
 
         # Build merged results on the 5s grid
         merged_results: list[tuple[float, dict | str]] = []
         for i, ts in enumerate(b_timestamps):
             merged: dict = {}
-            # Upper data: from Phase A if on 15s grid, otherwise empty
             if ts in phase_a_data:
                 upper = phase_a_data[ts]
                 merged.update(upper)
