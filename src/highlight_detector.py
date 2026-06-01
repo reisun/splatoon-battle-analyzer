@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 
 from src.battle_analyzer import BattleAnalyzer
 from src.frame_extractor import extract_frames
@@ -222,10 +223,12 @@ class HighlightDetector:
         analyzer: BattleAnalyzer,
         interval: float = 5,
         weight_overrides: dict[str, float] | None = None,
+        frame_output_dir: Path | None = None,
     ) -> None:
         self.analyzer = analyzer
         self.interval = interval
         self.weight_overrides = weight_overrides
+        self.frame_output_dir = frame_output_dir
         self.scan_summary: dict = {}
         self.all_frames: list[FrameAnalysis] = []
 
@@ -256,6 +259,14 @@ class HighlightDetector:
             pre_analyzed,
         )
 
+    def _save_frame(self, frame, subdir: str, label: str) -> None:
+        """フレーム画像をディスクに保存する."""
+        if not self.frame_output_dir:
+            return
+        out_dir = self.frame_output_dir / subdir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out_dir / f"frame_{label}.jpg"), frame)
+
     def _detect_nawabari(
         self,
         video_path: Path,
@@ -278,6 +289,7 @@ class HighlightDetector:
         def _analyze(index: int) -> tuple[float, dict]:
             ts = scan_start + index * self.interval
             label = self._format_timestamp(ts)
+            self._save_frame(frames[index], "frames", label)
             try:
                 result = self.analyzer.analyze_frame_lower_only(frames[index], label)
             except Exception:
@@ -357,12 +369,13 @@ class HighlightDetector:
 
         def _analyze_upper(index: int) -> None:
             ts = scan_start + index * phase_a_interval
+            label = self._format_timestamp(ts)
+            self._save_frame(frames_a[index], "phase_a", label)
             cached = self._find_pre_analyzed(ts, pre_analyzed)
             if cached is not None:
                 results_a[index] = (ts, dict(cached))
                 reused_count[0] += 1
             else:
-                label = self._format_timestamp(ts)
                 try:
                     result = self.analyzer.analyze_frame_upper_only(frames_a[index], label)
                 except Exception:
@@ -439,6 +452,7 @@ class HighlightDetector:
         def _analyze_lower(index: int) -> None:
             ts = b_timestamps[index]
             label = self._format_timestamp(ts)
+            self._save_frame(frames_b[index], "phase_b", label)
             try:
                 result = self.analyzer.analyze_frame_lower_only(frames_b[index], label)
             except Exception:

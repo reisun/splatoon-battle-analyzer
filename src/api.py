@@ -238,15 +238,20 @@ def _build_pre_analyzed(scan_job_id: str | None) -> dict[float, dict] | None:
     return mapping
 
 
+SHARED_DATA_DIR = Path(os.environ.get("SHARED_DATA_DIR", "/shared-data"))
+
+
 def _run_job(job_id: str, request: HighlightRequest) -> None:
     job_store.mark_running(job_id)
     try:
         pre_analyzed = _build_pre_analyzed(request.scan_job_id)
         analyzer = BattleAnalyzer(model=request.model, concurrency=request.concurrency)
+        frame_output_dir = SHARED_DATA_DIR / "tmp" / job_id
         detector = HighlightDetector(
             analyzer=analyzer,
             interval=request.interval,
             weight_overrides=request.weights,
+            frame_output_dir=frame_output_dir,
         )
 
         def on_progress(phase: int, frames_done: int, frames_total: int) -> None:
