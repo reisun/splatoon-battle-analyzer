@@ -13,6 +13,7 @@ from pathlib import Path
 import cv2
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
+from src.clef_client import lower_configuration_error
 from src.frame_extractor import extract_frames
 from src.frame_source import FileFrameSource, FrameSource, StreamFrameSource
 from src.highlight_detector import HighlightDetector
@@ -300,7 +301,9 @@ def run(argv: list[str] | None = None) -> int:
         return 0
 
     if not check_api_key_available():
-        logger.warning("GEMINI_API_KEY is not set. Use --frames-only or set the environment variable.")
+        logger.warning(
+            "GEMINI_API_KEY is not set. Use --frames-only or set the environment variable."
+        )
         if not args.no_save:
             print(f"\nExtracted {len(frame_paths)} frames to {output_dir}")
         print("Set GEMINI_API_KEY environment variable.")
@@ -338,6 +341,10 @@ def _run_highlight_mode(args: argparse.Namespace) -> int:
     """Run highlight detection pipeline."""
     if not check_api_key_available():
         logger.error("GEMINI_API_KEY is not set.")
+        return 1
+
+    if error := lower_configuration_error():
+        logger.error("%s", error)
         return 1
 
     analyzer = BattleAnalyzer(concurrency=args.concurrency, model=args.model)

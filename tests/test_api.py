@@ -11,6 +11,36 @@ from src.highlight_detector import HighlightSegment
 client = TestClient(app)
 
 
+@pytest.mark.parametrize("endpoint", ["/analyze/highlights", "/analyze/highlights/jobs"])
+@patch("src.api.check_api_key_available", return_value=True)
+def test_highlights_require_cloudflare_before_work(
+    mock_check: MagicMock, endpoint: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reject missing Clef credentials before creating a job or invoking analysis."""
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN")
+    video = tmp_path / "test.mp4"
+    video.write_bytes(b"fake")
+    with patch("src.api.BattleAnalyzer") as analyzer, patch.object(job_store, "create") as create:
+        response = client.post(endpoint, json={"file_path": str(video)})
+    assert response.status_code == 503
+    assert "CLOUDFLARE_API_TOKEN" in response.json()["detail"]
+    analyzer.assert_not_called()
+    create.assert_not_called()
+
+
+@patch("src.api.check_api_key_available", return_value=True)
+@patch("src.api._run_scan_job")
+def test_scan_does_not_require_cloudflare(
+    mock_run: MagicMock, mock_check: MagicMock, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID")
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN")
+    video = tmp_path / "test.mp4"
+    video.write_bytes(b"fake")
+    response = client.post("/analyze/matches/scan/jobs", json={"file_path": str(video)})
+    assert response.status_code == 200
+
+
 class TestHealthEndpoint:
     """Tests for /health endpoint."""
 

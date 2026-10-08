@@ -1,4 +1,4 @@
-"""Battle analysis module using Gemini Vision API.
+"""Battle analysis using Gemini for counts and Clef-flash for kills/death.
 
 Sends frame images to Gemini 2.5 Flash-Lite and extracts battle status.
 Supports concurrent calls for improved throughput.
@@ -15,6 +15,8 @@ import cv2
 import numpy as np
 from google import genai
 from google.genai import types
+
+from src.clef_client import analyze_lower_frame
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +129,7 @@ def _create_client() -> genai.Client:
 
 
 class BattleAnalyzer:
-    """Analyzes Splatoon battle frames using Gemini Vision API."""
+    """Analyzes Splatoon frames using Gemini and Cloudflare Clef-flash."""
 
     def __init__(self, model: str | None = None, concurrency: int = 4, timeout: int = 120) -> None:
         if model:
@@ -137,6 +139,9 @@ class BattleAnalyzer:
         self.concurrency = concurrency
         self.timeout = timeout
         self.client = _create_client()
+        self.lower_provider = os.environ.get("LOWER_ANALYSIS_PROVIDER", "clef")
+        if self.lower_provider not in ("clef", "gemini"):
+            raise RuntimeError("LOWER_ANALYSIS_PROVIDER must be clef or gemini")
 
     def _call_gemini(
         self,
@@ -256,6 +261,15 @@ class BattleAnalyzer:
         )
         return parse_llm_response(result)
 
+    def _analyze_lower_cropped(self, frame: np.ndarray, timestamp: str) -> dict | str:
+        """Route lower analysis to Clef, or an explicitly configured Gemini rollback."""
+        if self.lower_provider == "gemini":
+            return self._analyze_cropped(
+                frame, LOWER_HALF_USER_PROMPT, LOWER_HALF_SYSTEM_PROMPT, timestamp
+            )
+        state = LOWER_HALF_SYSTEM_PROMPT.split("■ 出力フォーマット")[0]
+        return analyze_lower_frame(_encode_frame_jpeg(frame), state, self.timeout)
+
     @staticmethod
     def _merge_results(upper: dict | str, lower: dict | str) -> dict:
         """Merge upper/lower half analysis results into a single dict."""
@@ -263,7 +277,9 @@ class BattleAnalyzer:
         if isinstance(upper, dict):
             merged.update(upper)
         else:
-            merged.update({"my_team_count": None, "enemy_team_count": None, "has_count_rail": False})
+            merged.update(
+                {"my_team_count": None, "enemy_team_count": None, "has_count_rail": False}
+            )
         if isinstance(lower, dict):
             merged.update(lower)
         else:
@@ -288,10 +304,8 @@ class BattleAnalyzer:
                 timestamp,
             )
             lower_future = executor.submit(
-                self._analyze_cropped,
+                self._analyze_lower_cropped,
                 lower_half,
-                LOWER_HALF_USER_PROMPT,
-                LOWER_HALF_SYSTEM_PROMPT,
                 timestamp,
             )
             upper_result = upper_future.result()
@@ -326,12 +340,7 @@ class BattleAnalyzer:
         lower_half = frame[int(h * 0.7) :, :, :]
 
         logger.info("Analyzing frame at %s (lower-only mode)", timestamp)
-        lower_result = self._analyze_cropped(
-            lower_half,
-            LOWER_HALF_USER_PROMPT,
-            LOWER_HALF_SYSTEM_PROMPT,
-            timestamp,
-        )
+        lower_result = self._analyze_lower_cropped(lower_half, timestamp)
         merged = self._merge_results({}, lower_result)
         logger.info("Analysis complete for frame at %s (lower-only mode)", timestamp)
         return merged
@@ -351,9 +360,7 @@ class BattleAnalyzer:
         """
         image_bytes = _encode_frame_jpeg(frame)
         logger.info("Analyzing frame at %s with custom prompt", timestamp)
-        result = self._call_gemini(
-            prompt, image_bytes, system_prompt=FRAME_ANALYSIS_SYSTEM_PROMPT
-        )
+        result = self._call_gemini(prompt, image_bytes, system_prompt=FRAME_ANALYSIS_SYSTEM_PROMPT)
         logger.info("Analysis complete for frame at %s", timestamp)
         return parse_llm_response(result)
 

@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
+from src.clef_client import lower_configuration_error
 from src.highlight_detector import FrameAnalysis, HighlightDetector
 from src.job_store import JobStatus, JobStore
 from src.match_scanner import MatchInfo, MatchScanner, ScanFrameAnalysis, ScanResult
@@ -165,6 +166,9 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
     if not check_api_key_available():
         raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
 
+    if error := lower_configuration_error():
+        raise HTTPException(status_code=503, detail=error)
+
     analyzer = BattleAnalyzer(
         model=request.model,
         concurrency=request.concurrency,
@@ -210,6 +214,9 @@ async def create_highlight_job(request: HighlightRequest) -> JobCreateResponse:
 
     if not check_api_key_available():
         raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
+
+    if error := lower_configuration_error():
+        raise HTTPException(status_code=503, detail=error)
 
     job = job_store.create()
     asyncio.get_event_loop().run_in_executor(None, _run_job, job.job_id, request)
