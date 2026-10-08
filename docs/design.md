@@ -2,7 +2,7 @@
 
 ## 1. 目的
 
-スプラトゥーンのプレイ動画を入力し、一定間隔でフレームを抽出した上で Gemini Vision API により戦況を解析するツール。
+スプラトゥーンのプレイ動画を入力し、一定間隔でフレームを抽出した上で Gemini Vision API と Cloudflare Clef-flash により戦況を解析するツール。
 
 以下の2つのインターフェースを提供する。
 
@@ -32,7 +32,7 @@
   [CLI pipeline]  [FastAPI API]
          |             |
          v             v
-[BattleAnalyzer] -- Gemini Vision API (google-genai SDK)
+[BattleAnalyzer] -- 上部・スキャン・全画面: Gemini / 下部: Clef-flash
          |             |
          +------+------+
                 |
@@ -51,7 +51,7 @@
 | API (`src/api.py`) | FastAPI エンドポイント、同期/非同期ジョブ管理 |
 | FrameSource (`src/frame_source.py`) | フレームソース抽象化（ファイル/ストリーム） |
 | Frame Extractor (`src/frame_extractor.py`) | 動画からのフレーム抽出、画像保存 |
-| Battle Analyzer (`src/battle_analyzer.py`) | Gemini Vision API 呼び出し、プロンプト定義、レスポンスパース |
+| Battle Analyzer (`src/battle_analyzer.py`) | Gemini / Clef-flash API 呼び出し、プロンプト定義、レスポンスパース |
 | Highlight Detector (`src/highlight_detector.py`) | スライディングウィンドウによるハイライト区間検出 |
 | Match Scanner (`src/match_scanner.py`) | タイマー読み取りによる試合境界スキャン |
 | Job Store (`src/job_store.py`) | インメモリ非同期ジョブ管理（スレッドセーフ） |
@@ -68,7 +68,7 @@ splatoon-battle-analyzer/
     cli.py                   # CLI 引数解析・パイプライン制御
     frame_source.py          # FrameSource ABC / FileFrameSource / StreamFrameSource
     frame_extractor.py       # フレーム抽出（OpenCV VideoCapture）
-    battle_analyzer.py       # Gemini Vision API 呼び出し、プロンプト定義
+    battle_analyzer.py       # Gemini / Clef-flash API 呼び出し、プロンプト定義
     highlight_detector.py    # ハイライト検出（スライディングウィンドウ）
     match_scanner.py         # 試合境界スキャン（タイマー読み取り）
     scoring_config.py        # スコアリング設定ローダー
@@ -103,7 +103,11 @@ splatoon-battle-analyzer/
 4. CLI モードでは `frame_{MM}m{SS}s.jpg` 形式で出力ディレクトリに保存（`--no-save` 指定時はメモリ保持）
 5. API モード / ハイライトモードでは常にメモリ上で保持（`no_save=True`）
 
-### 4.2 解析フロー（Gemini Vision API）
+### 4.2 解析フロー
+
+ハイライト解析は上部（カウント・レール）と下部（キル数・デス）に分割する。上部はGemini、下部は既定でClef-flashを使用する。下部の入力・出力・障害時動作は [下部解析設計](lower-analysis.md) を参照。
+
+全画面の旧CLI解析と試合区間スキャンはGeminiを継続する。以下はGeminiの呼び出しフロー。
 
 1. `BattleAnalyzer` がモデル名（デフォルト: `gemini-2.5-flash-lite`）と並行数で初期化
 2. フレーム画像を `cv2.imencode()` でメモリ上の JPEG bytes に変換
@@ -126,7 +130,7 @@ Client --> GET /analyze/highlights/jobs/{job_id} --> JobStore --> Status/Result
 
 ### 4.4 並行フレーム分析
 
-`ThreadPoolExecutor` により複数フレームを並行して Gemini API に送信する。`concurrency` パラメータ（デフォルト: 4）で同時実行数を制御。
+`ThreadPoolExecutor` により複数フレームを並行して各解析処理のAPI（上部はGemini、下部は既定でClef-flash）に送信する。`concurrency` パラメータ（デフォルト: 4）で同時実行数を制御。
 
 ## 5. ハイライト検出アルゴリズム
 
@@ -344,7 +348,9 @@ python -m src.cli --stream <rtmp_url> [options]
 
 ## 8. 解析プロンプト設計
 
-Gemini Vision に送信するプロンプトは以下の要素を JSON 形式で抽出するよう設計されている。
+以下は全画面の旧CLI解析におけるGeminiプロンプト。ハイライト解析の下部は `kills`（0〜4）と `is_dead` のみを取得し、ClefではChoiceとNoulを使用する。詳細は [下部解析設計](lower-analysis.md) を参照。
+
+Gemini Vision に送信する全画面プロンプトは以下の要素を JSON 形式で抽出するよう設計されている。
 
 | フィールド | 型 | 範囲 | 説明 |
 |-----------|------|------|------|
@@ -374,6 +380,8 @@ Gemini Vision に送信するプロンプトは以下の要素を JSON 形式で
 | ストリーム切断（リトライ成功） | 自動再接続して続行 |
 | Ctrl+C（ストリームモード） | グレースフルシャットダウン、取得済みフレームを処理 |
 | GEMINI_API_KEY 未設定 | CLI: 警告メッセージ, exit code 1 / API: HTTP 503 |
+| Clef選択時にCloudflare設定が不足 | ハイライトAPI: HTTP 503。試合区間スキャンは影響なし |
+| Clef HTTP失敗・応答形式不正 | RuntimeError。既存の個別フレームエラー処理に従い、Geminiへの自動切り替えなし |
 | API キー未設定 + --frames-only | フレーム抽出のみ実行、exit code 0 |
 | 個別フレーム解析失敗 | エラーログ、スコア 1 のフォールバック値で続行 |
 | 非同期ジョブ失敗 | ジョブ status を "failed" に更新、error にメッセージを格納 |
@@ -501,7 +509,7 @@ class StreamFrameSource(FrameSource):
 |------|------|
 | 言語 | Python 3.12 |
 | フレーム抽出 | OpenCV (opencv-python-headless) |
-| 画像解析 | Gemini Vision API (google-genai SDK) |
+| 画像解析 | 上部・スキャン・全画面: Gemini Vision API (google-genai SDK)、下部: Cloudflare Clef-flash (REST) |
 | API フレームワーク | FastAPI + uvicorn |
 | 非同期ジョブ | ThreadPoolExecutor + インメモリ JobStore |
 | テスト | pytest + pytest-ruff |
@@ -517,7 +525,8 @@ cd splatoon-battle-analyzer
 
 # 2. 環境変数設定
 cp .env.example .env
-# .env に GEMINI_API_KEY を設定
+# .env に GEMINI_API_KEY、CLOUDFLARE_ACCOUNT_ID、CLOUDFLARE_API_TOKEN を設定
+# 下部をGeminiに戻す場合は LOWER_ANALYSIS_PROVIDER=gemini
 
 # 3. ビルド・起動（API サーバーが localhost:8020 で起動）
 docker compose build
