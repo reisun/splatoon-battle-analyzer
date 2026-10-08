@@ -51,6 +51,23 @@ class JobStore:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def snapshot(self, job_id: str | None) -> dict | None:
+        """Copy progress atomically for activity reconciliation."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            return {
+                "status": job.status.value,
+                "started_at": job.started_at,
+                "progress": {
+                    "phase": job.progress.phase,
+                    "phase_total": job.progress.phase_total,
+                    "frames_done": job.progress.frames_done,
+                    "frames_total": job.progress.frames_total,
+                },
+            }
+
     def update_progress(
         self,
         job_id: str,

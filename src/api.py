@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 logging.basicConfig(
@@ -13,6 +14,7 @@ logging.basicConfig(
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+from src.activity import ProcessingActivity
 from src.battle_analyzer import BattleAnalyzer, check_api_key_available
 from src.clef_client import lower_configuration_error
 from src.highlight_detector import FrameAnalysis, HighlightDetector
@@ -29,6 +31,54 @@ app = FastAPI(
 )
 
 job_store = JobStore()
+activity = ProcessingActivity()
+_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
+
+
+def _submit_operation(kind: str, worker, request):
+    claim_id = activity.claim(kind)
+    if claim_id is None:
+        raise HTTPException(
+            status_code=409, detail="Processing in progress; please try again later"
+        )
+    try:
+        job = job_store.create()
+        activity.attach(claim_id, job.job_id)
+
+        def execute():
+            try:
+                return worker(job.job_id, request)
+            except BaseException as exc:
+                job_store.mark_failed(job.job_id, str(exc))
+                raise
+            finally:
+                activity.release(claim_id)
+
+        future = _executor.submit(execute)
+        future.job_id = job.job_id
+        future.add_done_callback(lambda _: activity.release(claim_id))
+        return future
+    except BaseException:
+        activity.release(claim_id)
+        raise
+
+
+@app.get("/processing")
+async def processing() -> dict:
+    operation = activity.snapshot()
+    operations = []
+    if operation:
+        job = job_store.snapshot(operation["job_id"])
+        operations.append(
+            {
+                "job_id": operation["job_id"],
+                "kind": operation["kind"],
+                "status": job["status"] if job else "queued",
+                "progress": job["progress"] if job else None,
+                "started_at": job["started_at"] if job else None,
+            }
+        )
+    return {"instance_id": activity.instance_id, "busy": bool(operation), "operations": operations}
 
 
 class HighlightRequest(BaseModel):
@@ -169,6 +219,13 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
     if error := lower_configuration_error():
         raise HTTPException(status_code=503, detail=error)
 
+    future = _submit_operation("highlights", _run_sync_highlights, request)
+    return await asyncio.shield(asyncio.wrap_future(future))
+
+
+def _run_sync_highlights(job_id: str, request: HighlightRequest) -> HighlightResponse:
+    job_store.mark_running(job_id)
+    video_path = Path(request.file_path)
     analyzer = BattleAnalyzer(
         model=request.model,
         concurrency=request.concurrency,
@@ -184,11 +241,14 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
             start_seconds=request.start,
             end_seconds=request.end,
             duration_type=request.duration_type,
+            progress_callback=lambda phase, done, total: job_store.update_progress(
+                job_id, phase, done, total, phase_total=2
+            ),
         )
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return HighlightResponse(
+    result = HighlightResponse(
         video=video_path.name,
         model=analyzer.model,
         highlights=[
@@ -204,6 +264,9 @@ async def analyze_highlights(request: HighlightRequest) -> HighlightResponse:
         scan_summary=detector.scan_summary,
     )
 
+    job_store.mark_completed(job_id, result.model_dump())
+    return result
+
 
 @app.post("/analyze/highlights/jobs", response_model=JobCreateResponse)
 async def create_highlight_job(request: HighlightRequest) -> JobCreateResponse:
@@ -218,9 +281,8 @@ async def create_highlight_job(request: HighlightRequest) -> JobCreateResponse:
     if error := lower_configuration_error():
         raise HTTPException(status_code=503, detail=error)
 
-    job = job_store.create()
-    asyncio.get_event_loop().run_in_executor(None, _run_job, job.job_id, request)
-    return JobCreateResponse(job_id=job.job_id)
+    future = _submit_operation("highlights", _run_job, request)
+    return JobCreateResponse(job_id=future.job_id)
 
 
 def _build_pre_analyzed(scan_job_id: str | None) -> dict[float, dict] | None:
@@ -387,9 +449,8 @@ async def create_match_scan_job(request: MatchScanRequest) -> MatchScanJobCreate
     if not check_api_key_available():
         raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
 
-    job = job_store.create()
-    asyncio.get_event_loop().run_in_executor(None, _run_scan_job, job.job_id, request)
-    return MatchScanJobCreateResponse(job_id=job.job_id)
+    future = _submit_operation("scan", _run_scan_job, request)
+    return MatchScanJobCreateResponse(job_id=future.job_id)
 
 
 def _run_scan_job(job_id: str, request: MatchScanRequest) -> None:
